@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def write_graphml(path: Path, *, include_macro_helper: bool = False) -> None:
+def write_graphml(
+    path: Path,
+    *,
+    include_macro_helper: bool = False,
+    line_number: int = 4,
+) -> None:
     helper = """
     <node id="90">
       <data key="labelV">METHOD</data>
@@ -41,8 +46,8 @@ def write_graphml(path: Path, *, include_macro_helper: bool = False) -> None:
       <data key="node__METHOD__CODE">int target(char *src)</data>
     </node>
     <node id="2"><data key="labelV">BLOCK</data><data key="node__BLOCK__CODE">{{...}}</data></node>
-    <node id="3"><data key="labelV">CALL</data><data key="node__CALL__CODE">strcpy(dst, src)</data><data key="node__CALL__LINE_NUMBER">4</data></node>
-    <node id="4"><data key="labelV">IDENTIFIER</data><data key="node__IDENTIFIER__CODE">src</data><data key="node__IDENTIFIER__LINE_NUMBER">4</data></node>
+    <node id="3"><data key="labelV">CALL</data><data key="node__CALL__CODE">strcpy(dst, src)</data><data key="node__CALL__LINE_NUMBER">{line_number}</data></node>
+    <node id="4"><data key="labelV">IDENTIFIER</data><data key="node__IDENTIFIER__CODE">src</data><data key="node__IDENTIFIER__LINE_NUMBER">{line_number}</data></node>
     <node id="5"><data key="labelV">METHOD</data><data key="node__METHOD__NAME">strcpy</data><data key="node__METHOD__IS_EXTERNAL">true</data></node>
     <node id="6"><data key="labelV">METHOD</data><data key="node__METHOD__NAME">&lt;global&gt;</data><data key="node__METHOD__IS_EXTERNAL">false</data></node>
     {helper}
@@ -58,4 +63,3 @@ def write_graphml(path: Path, *, include_macro_helper: bool = False) -> None:
 """,
         encoding="utf-8",
     )
-
