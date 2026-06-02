@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import torch
@@ -8,6 +9,9 @@ import torch
 from cpg_vuln.data.topology import GraphTopology
 from cpg_vuln.features.text import NodeTextRegistry, normalize_node_text
 from cpg_vuln.utils.fingerprint import write_json_atomic
+
+
+TOPOLOGY_CACHE_SCHEMA_VERSION = 1
 
 
 class NodeTypeRegistry:
@@ -44,14 +48,39 @@ def save_topology(
     label: int,
     texts: NodeTextRegistry,
     node_types: NodeTypeRegistry,
+    *,
+    commit_id: str | None = None,
 ) -> dict[str, object]:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    commit_id = commit_id if commit_id is not None else uuid.uuid4().hex
+    payload = build_topology_payload(
+        topology,
+        sample_id,
+        label,
+        texts,
+        node_types,
+        commit_id=commit_id,
+    )
+    save_topology_payload(path, payload)
+    return topology_index_record(path, payload)
+
+
+def build_topology_payload(
+    topology: GraphTopology,
+    sample_id: str,
+    label: int,
+    texts: NodeTextRegistry,
+    node_types: NodeTypeRegistry,
+    *,
+    commit_id: str,
+) -> dict[str, object]:
     edge_index = torch.tensor(topology.edges, dtype=torch.long)
     if edge_index.numel():
         edge_index = edge_index.t().contiguous()
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
     payload: dict[str, object] = {
+        "cache_schema_version": TOPOLOGY_CACHE_SCHEMA_VERSION,
+        "commit_id": commit_id,
         "sample_id": sample_id,
         "y": torch.tensor([label], dtype=torch.long),
         "view": topology.view,
@@ -78,13 +107,25 @@ def save_topology(
     }
     if topology.edge_types:
         payload["edge_type"] = torch.tensor(topology.edge_types, dtype=torch.long)
+    return payload
+
+
+def save_topology_payload(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
+
+
+def topology_index_record(
+    path: Path,
+    payload: dict[str, object],
+) -> dict[str, object]:
     return {
-        "sample_id": sample_id,
-        "view": topology.view,
+        "commit_id": str(payload["commit_id"]),
+        "sample_id": str(payload["sample_id"]),
+        "view": str(payload["view"]),
         "path": str(path.resolve()),
-        "nodes": len(topology.nodes),
-        "edges": len(topology.edges),
+        "nodes": int(payload["text_id"].numel()),
+        "edges": int(payload["edge_index"].shape[1]),
     }
 
 
