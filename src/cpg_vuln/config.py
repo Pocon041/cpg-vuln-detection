@@ -15,6 +15,19 @@ DEFAULT_CONFIG = {
         "artifacts_dir": "artifacts",
         "outputs_dir": "outputs",
     },
+    "source_mapping": {
+        "default_line_offset": 64,
+        "source_map_path": "artifacts/manifests/source_map.csv",
+        "prepared_source_root": None,
+        "overrides_path": "configs/source_map_overrides.csv",
+        "validate_offsets": True,
+        "allow_sample_overrides": True,
+        "validation": {
+            "max_sampled_nodes": 32,
+            "context_radius": 2,
+            "minimum_token_match_ratio": 0.5,
+        },
+    },
     "features": {
         "word2vec_dim": 128,
         "word2vec_epochs": 10,
@@ -48,6 +61,9 @@ def load_config(path: Path | None = None) -> dict:
     config["paths"] = {
         name: str(_resolve(root, value)) for name, value in config["paths"].items()
     }
+    for name in ("source_map_path", "prepared_source_root", "overrides_path"):
+        value = config["source_mapping"][name]
+        config["source_mapping"][name] = str(_resolve(root, value)) if value else None
     return config
 
 

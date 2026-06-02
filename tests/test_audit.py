@@ -3,6 +3,9 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import yaml
+
+from cpg_vuln.config import load_config
 from cpg_vuln.data.audit import CONFLICT_SAMPLE_IDS, audit_dataset
 
 from .helpers import write_graphml
@@ -41,3 +44,44 @@ def test_audit_uses_metadata_and_excludes_conflicting_samples(tmp_path: Path) ->
     assert "11_1-checkpoint" not in {record.sample_id for record in report.included}
     assert "3569_0" in CONFLICT_SAMPLE_IDS
 
+
+def test_load_config_resolves_source_mapping_paths_without_duplicate_raw_source_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "paths": {"source_root": "raw-sources"},
+                "source_mapping": {
+                    "source_map_path": "temporary-artifacts/manifests/source_map.csv",
+                    "overrides_path": "temporary-config/missing-overrides.csv",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config["paths"]["source_root"] == str((tmp_path / "raw-sources").resolve())
+    assert "raw_source_root" not in config["source_mapping"]
+    assert config["source_mapping"] == {
+        "default_line_offset": 64,
+        "source_map_path": str(
+            (tmp_path / "temporary-artifacts" / "manifests" / "source_map.csv").resolve()
+        ),
+        "prepared_source_root": None,
+        "overrides_path": str(
+            (tmp_path / "temporary-config" / "missing-overrides.csv").resolve()
+        ),
+        "validate_offsets": True,
+        "allow_sample_overrides": True,
+        "validation": {
+            "max_sampled_nodes": 32,
+            "context_radius": 2,
+            "minimum_token_match_ratio": 0.5,
+        },
+    }

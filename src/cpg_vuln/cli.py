@@ -7,6 +7,7 @@ from pathlib import Path
 from cpg_vuln.config import load_config
 from cpg_vuln.data.audit import audit_dataset, read_manifest
 from cpg_vuln.data.build import build_topologies
+from cpg_vuln.data.source_map import SourceMapConfig, build_source_map, write_source_map
 from cpg_vuln.data.split import grouped_stratified_split, stratified_split
 from cpg_vuln.features.codebert import (
     CodeBertEncoder,
@@ -35,6 +36,28 @@ def main(argv: list[str] | None = None) -> None:
             excluded_csv=_optional_path(paths.get("excluded_csv")),
         )
         report.write(artifacts / "data")
+        source_mapping = config["source_mapping"]
+        validation = source_mapping["validation"]
+        write_source_map(
+            Path(source_mapping["source_map_path"]),
+            build_source_map(
+                report.included,
+                config=SourceMapConfig(
+                    default_line_offset=source_mapping["default_line_offset"],
+                    prepared_source_root=_optional_path(
+                        source_mapping["prepared_source_root"]
+                    ),
+                    overrides_path=_optional_path(source_mapping["overrides_path"]),
+                    validate_offsets=source_mapping["validate_offsets"],
+                    allow_sample_overrides=source_mapping["allow_sample_overrides"],
+                    max_sampled_nodes=validation["max_sampled_nodes"],
+                    context_radius=validation["context_radius"],
+                    minimum_token_match_ratio=validation[
+                        "minimum_token_match_ratio"
+                    ],
+                ),
+            ),
+        )
         split_dir = artifacts / "data" / "splits"
         split_dir.mkdir(parents=True, exist_ok=True)
         seed = config["training"]["seed"]
