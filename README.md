@@ -54,7 +54,7 @@ python -m cpg_vuln explain
 
 训练命令默认检测已有 `metrics.json` 并跳过已完成组合。需要重新训练时显式加入 `--force`。也可以通过 `--views`、`--embeddings`、`--splits` 和 `--variants` 缩小实验矩阵。
 
-训练过程中每个 epoch 会显示一条进度条，并打印训练损失、验证集 accuracy、precision、recall、F1、ROC-AUC、PR-AUC、最佳 F1 和剩余 patience。训练结束后会打印最终 validation 和 test 指标汇总。已经启动的训练进程不会动态加载代码修改，需要重新启动后才能看到新的输出。
+训练过程中每个 epoch 会显示一条进度条，并打印训练损失、验证集 accuracy、precision、recall、F1、ROC-AUC、PR-AUC、用于 checkpoint 选择和 early stopping 的最佳 ROC-AUC，以及剩余 patience。训练结束后会打印最终 validation 和 test 指标汇总。已经启动的训练进程不会动态加载代码修改，需要重新启动后才能看到新的输出。
 
 GraphML 约 3.4 GB，CodeBERT 需要首次下载 `microsoft/codebert-base` 并离线编码唯一节点文本。拓扑和向量缓存均支持断点续跑。训练阶段只读取缓存，不加载 Transformer。
 

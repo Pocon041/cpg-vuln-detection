@@ -110,7 +110,7 @@ def train_enhanced(
                 val_dataset=datasets["val"],
                 test_dataset=datasets["test"],
                 output_dir=run_dir,
-                config=_train_config(config, epochs=epochs, learning_rate=5e-4),
+                config=_train_config(config, epochs=epochs, learning_rate=1e-4),
                 run_metadata={
                     "kind": "enhanced",
                     "variant": variant,

@@ -53,9 +53,10 @@ def run_training(
     train_loader, train_sampler = _loader(train_dataset, config=config, shuffle=True)
     val_loader, _ = _loader(val_dataset, config=config, shuffle=False)
     test_loader, _ = _loader(test_dataset, config=config, shuffle=False)
-    best_f1 = -1.0
+    best_roc_auc: float | None = None
+    has_checkpoint = False
     remaining_patience = config.patience
-    history: list[dict[str, float | int]] = []
+    history: list[dict[str, float | int | None]] = []
     started = time.perf_counter()
     epoch_progress = tqdm(
         range(config.epochs),
@@ -70,22 +71,35 @@ def run_training(
         validation_metrics = classification_metrics(
             validation["labels"], validation["probabilities"], threshold=threshold
         )
-        history.append({"epoch": epoch + 1, "loss": loss, "val_f1": validation_metrics["f1"]})
+        validation_roc_auc = validation_metrics["roc_auc"]
+        history.append(
+            {
+                "epoch": epoch + 1,
+                "loss": loss,
+                "val_f1": validation_metrics["f1"],
+                "val_roc_auc": validation_roc_auc,
+            }
+        )
         should_stop = False
-        if validation_metrics["f1"] > best_f1:
-            best_f1 = float(validation_metrics["f1"])
+        has_better_roc_auc = validation_roc_auc is not None and (
+            best_roc_auc is None or float(validation_roc_auc) > best_roc_auc
+        )
+        if has_better_roc_auc or not has_checkpoint:
+            if has_better_roc_auc:
+                best_roc_auc = float(validation_roc_auc)
             remaining_patience = config.patience
             torch.save(
                 {"model_state": model.state_dict(), "epoch": epoch + 1, "threshold": threshold},
                 output_dir / "best.pt",
             )
+            has_checkpoint = True
         else:
             remaining_patience -= 1
             should_stop = remaining_patience <= 0
         epoch_progress.set_postfix(
             loss=f"{loss:.4f}",
             val_f1=_format_metric(validation_metrics["f1"]),
-            best_f1=f"{best_f1:.4f}",
+            best_roc_auc=_format_metric(best_roc_auc),
             patience=remaining_patience,
         )
         tqdm.write(
@@ -93,7 +107,7 @@ def run_training(
                 epoch=epoch + 1,
                 loss=loss,
                 metrics=validation_metrics,
-                best_f1=best_f1,
+                best_roc_auc=best_roc_auc,
                 remaining_patience=remaining_patience,
             )
         )
@@ -127,7 +141,7 @@ def run_training(
 
 def _train_epoch(model, loader, optimizer, scaler, device, gradient_clip: float) -> float:
     model.train()
-    losses: list[float] = []
+    losses_and_samples: list[tuple[float, int]] = []
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad(set_to_none=True)
@@ -143,8 +157,17 @@ def _train_epoch(model, loader, optimizer, scaler, device, gradient_clip: float)
         except torch.OutOfMemoryError as error:
             sample_ids = getattr(batch, "sample_id", "<unknown>")
             raise RuntimeError(f"CUDA OOM while processing samples: {sample_ids}") from error
-        losses.append(float(loss.detach().cpu()))
-    return float(np.mean(losses)) if losses else 0.0
+        losses_and_samples.append((float(loss.detach().cpu()), int(batch.y.numel())))
+    return _sample_weighted_mean_loss(losses_and_samples)
+
+
+def _sample_weighted_mean_loss(losses_and_samples: Sequence[tuple[float, int]]) -> float:
+    if not losses_and_samples:
+        return 0.0
+    total_samples = sum(samples for _, samples in losses_and_samples)
+    if total_samples <= 0:
+        raise ValueError("total sample count must be positive")
+    return sum(loss * samples for loss, samples in losses_and_samples) / total_samples
 
 
 @torch.inference_mode()
@@ -225,7 +248,7 @@ def _epoch_summary(
     epoch: int,
     loss: float,
     metrics: dict[str, object],
-    best_f1: float,
+    best_roc_auc: float | None,
     remaining_patience: int,
 ) -> str:
     return (
@@ -236,7 +259,7 @@ def _epoch_summary(
         f"val_f1={_format_metric(metrics['f1'])} "
         f"val_roc_auc={_format_metric(metrics['roc_auc'])} "
         f"val_pr_auc={_format_metric(metrics['pr_auc'])} "
-        f"best_f1={best_f1:.4f} patience={remaining_patience}"
+        f"best_roc_auc={_format_metric(best_roc_auc)} patience={remaining_patience}"
     )
 
 
