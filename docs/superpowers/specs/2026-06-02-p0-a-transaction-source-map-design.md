@@ -15,8 +15,10 @@ P0-A includes:
 - same-directory temporary files and atomic replacement;
 - transactional per-sample topology commits;
 - verifiable per-sample completion markers;
+- commit-ID validation across markers, index records, and topology payloads;
 - idempotent topology index updates;
 - single-writer enforcement for topology builds;
+- explicit stale-lock recovery;
 - source-map generation during `audit`;
 - default source-line offset `64`;
 - optional per-sample source-line offset overrides;
@@ -64,18 +66,56 @@ artifacts/topologies/.build-topologies.lock
 ```
 
 Opening the lock with exclusive creation rejects a concurrent writer with a
-clear error. The lock is removed in a `finally` block.
+clear error. The lock contains diagnostic information:
+
+```json
+{
+  "pid": 12345,
+  "hostname": "DESKTOP-example",
+  "created_at": "2026-06-02T12:00:00Z"
+}
+```
+
+The lock is removed in a `finally` block. A forced process termination may leave
+the lock behind. By default, a later build reports the stored diagnostic
+information and refuses to proceed. The CLI adds:
+
+```powershell
+python -m cpg_vuln build-topologies --break-stale-lock
+```
+
+Only this explicit flag removes an existing lock before acquiring a new one.
+P0-A does not automatically infer staleness from lock age because a legitimate
+build may run for a long time.
+
+P0-A supports one canonical topology view set:
+
+```text
+ast
+cfg
+pdg
+core-cpg
+dataflow-cpg
+```
+
+`build-topologies` always commits this complete set. Partial-view commits are
+not supported because one per-sample completion marker cannot represent
+independently committed view subsets safely. Marker view names use stable
+lexicographic ordering.
 
 For each sample:
 
-1. Build every requested view and update in-memory registries.
-2. Atomically write `text_registry.json`.
-3. Atomically write `node_type_registry.json`.
-4. Write each topology payload to a same-directory temporary `.pt` file.
-5. Atomically replace every final `.pt` file.
-6. Replace existing index entries with the same `(sample_id, view)` keys.
-7. Atomically write the complete, stably sorted `index.json`.
-8. Atomically write the completion marker last.
+0. Remove an existing completion marker before modifying any final topology
+   file. A missing marker makes an interrupted replacement non-skippable.
+1. Generate a unique `commit_id` with `uuid.uuid4().hex`.
+2. Build every canonical view and update in-memory registries.
+3. Atomically write `text_registry.json`.
+4. Atomically write `node_type_registry.json`.
+5. Write each topology payload to a same-directory temporary `.pt` file.
+6. Atomically replace every final `.pt` file.
+7. Replace existing index entries with the same `(sample_id, view)` keys.
+8. Atomically write the complete, stably sorted `index.json`.
+9. Atomically write the completion marker last.
 
 Registry files intentionally commit before topology files. If interruption
 occurs after registry commit but before topology commit, orphan registry entries
@@ -85,7 +125,17 @@ registry entries because existing topology files rely on stable IDs.
 
 The index is keyed by `(sample_id, view)`. Rebuilding a sample overwrites old
 records with the same key and writes a stable `sample_id`, `view` ordering. It
-must never append duplicate records.
+must never append duplicate records. Every index record stores the current
+`commit_id`.
+
+Each topology payload stores:
+
+```json
+{
+  "cache_schema_version": 1,
+  "commit_id": "a unique transaction ID"
+}
+```
 
 Completion markers live at:
 
@@ -99,7 +149,8 @@ Each marker contains:
 {
   "schema_version": 1,
   "sample_id": "0_0",
-  "views": ["ast", "cfg", "pdg", "core-cpg", "dataflow-cpg"],
+  "commit_id": "a unique transaction ID",
+  "views": ["ast", "cfg", "core-cpg", "dataflow-cpg", "pdg"],
   "text_registry_size_at_commit": 12345,
   "node_type_registry_size_at_commit": 22,
   "topology_files": {
@@ -118,13 +169,16 @@ A sample may be skipped only when all checks pass:
 
 1. Its completion marker exists and has schema version `1`.
 2. The marker `sample_id` matches the current sample.
-3. The marker contains exactly the requested views.
-4. Every requested topology file exists.
-5. The index contains exactly one entry for every requested `(sample_id, view)`.
-6. Each topology payload has `max(text_id) < len(text_registry)`.
-7. Each topology payload has `max(node_type_id) < len(node_type_registry)`.
+3. The marker contains exactly the canonical views.
+4. Every canonical topology file exists.
+5. The index contains exactly one entry for every canonical
+   `(sample_id, view)`.
+6. Marker, index records, and topology payloads agree on `commit_id`.
+7. Each topology payload has `cache_schema_version == 1`.
+8. Each topology payload has `max(text_id) < len(text_registry)`.
+9. Each topology payload has `max(node_type_id) < len(node_type_registry)`.
 
-Any failed condition triggers a full rebuild of the requested views for that
+Any failed condition triggers a full rebuild of the canonical views for that
 sample. A stale or partial completion marker is overwritten only after the
 replacement topology files and idempotent index update commit successfully.
 
@@ -202,14 +256,24 @@ an offset automatically.
 
 For each sample, conservatively:
 
-1. Parse GraphML nodes with `LINE_NUMBER` and non-empty `CODE`.
-2. Sample at most `max_sampled_nodes`.
-3. Compute `raw_line = graphml_line - line_offset`.
-4. Require mapped lines to stay within original-source bounds.
-5. Ignore empty text, `<empty>`, pure punctuation, and overly short tokens.
-6. Search for at least one key token within `raw_line +/- context_radius`.
-7. Mark the row validated only when the match ratio meets
+1. Parse GraphML and select the primary internal, non-global method.
+2. Compute that method's AST closure.
+3. Within the closure, retain nodes with `LINE_NUMBER` and non-empty `CODE`.
+4. Ignore empty text, `<empty>`, pure punctuation, and overly short tokens.
+5. Sort candidates stably by `(line_number, node_id)`.
+6. Select at most `max_sampled_nodes` candidates at deterministic, evenly
+   distributed positions.
+7. Compute `raw_line = graphml_line - line_offset`.
+8. Require mapped lines to stay within original-source bounds.
+9. Search for at least one key token within `raw_line +/- context_radius`.
+10. Mark the row validated only when the match ratio meets
    `minimum_token_match_ratio`.
+
+When the primary method cannot be selected or no usable closure nodes remain,
+mark the row `no_line_evidence`. Any out-of-range mapped line or insufficient
+token-match ratio marks the row suspicious. The validator never examines
+external methods, `<global>`, type nodes, or unrelated metadata nodes outside
+the selected method closure.
 
 Future GraphML regeneration should insert:
 
@@ -228,6 +292,10 @@ Add focused tests for:
 - interruption after registry commit but before topology commit;
 - interruption after some view files commit but before index commit;
 - interruption after index commit but before marker commit;
+- old marker invalidation before view replacement;
+- mixed topology payload commit IDs being rejected;
+- index commit-ID mismatch being rejected;
+- topology payload commit-ID mismatch being rejected;
 - orphan registry entries surviving recovery without reindexing;
 - stale index entries being replaced, not duplicated;
 - skip requiring a completion marker;
@@ -235,6 +303,8 @@ Add focused tests for:
 - dangling `node_type_id` triggering rebuild;
 - completion marker being written last;
 - concurrent topology writers being rejected;
+- stale lock requiring the explicit break flag;
+- canonical topology view set enforcement;
 - source map using `paths.source_root`;
 - default offset `64`;
 - override precedence;
@@ -242,7 +312,9 @@ Add focused tests for:
 - missing override file warning;
 - malformed override file failure;
 - out-of-range source mapping status;
-- no-line-evidence source mapping status.
+- no-line-evidence source mapping status;
+- source-map validation using only the primary method AST closure;
+- deterministic source-map sampling.
 
 Tests use temporary directories and small synthetic GraphML fixtures. They must
 not write repository `artifacts/` or `outputs/`.
@@ -262,6 +334,8 @@ P0-A does not:
 - run full topology builds;
 - run full training;
 - infer line offsets automatically;
+- support partial topology-view commits;
+- remove stale topology locks automatically;
 - parallelize topology registry commits;
 - modify the enhanced model architecture.
 
@@ -280,4 +354,8 @@ P0-A is complete when:
 9. Index output contains no duplicate `(sample_id, view)` keys.
 10. Completion markers commit last.
 11. Concurrent topology writers receive an explicit error.
-
+12. Rebuilds invalidate old markers before replacing any final topology file.
+13. Marker, index, and topology payload commit IDs must match before skip.
+14. Stale locks require explicit `--break-stale-lock`.
+15. Source-map validation examines only a deterministic sample from the primary
+    method AST closure.
