@@ -102,6 +102,18 @@ def test_resume_rejects_payload_commit_id_mismatch(tmp_path: Path) -> None:
     _assert_valid_transaction(output_dir)
 
 
+def test_resume_rebuilds_corrupt_topology_payload(tmp_path: Path) -> None:
+    output_dir = tmp_path / "topologies"
+    record = _record(tmp_path)
+    build_topologies([record], output_dir)
+    path = output_dir / "ast" / "sample_1.pt"
+    path.write_bytes(b"not a torch payload")
+
+    build_topologies([record], output_dir)
+
+    _assert_valid_transaction(output_dir)
+
+
 def test_resume_rejects_index_commit_id_mismatch(tmp_path: Path) -> None:
     output_dir = tmp_path / "topologies"
     record = _record(tmp_path)

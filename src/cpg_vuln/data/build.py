@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import socket
 import sys
 import uuid
@@ -211,7 +212,14 @@ def _sample_is_complete(
             return False
         try:
             payload = load_topology(path)
-        except (EOFError, OSError, RuntimeError, TypeError, ValueError):
+        except (
+            EOFError,
+            OSError,
+            pickle.UnpicklingError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
             return False
         if not isinstance(payload, dict):
             return False
