@@ -44,4 +44,6 @@ def test_cli_audit_and_build_topologies_on_small_dataset(tmp_path: Path) -> None
     assert (tmp_path / "artifacts" / "data" / "manifest.jsonl").is_file()
     assert (tmp_path / "artifacts" / "topologies" / "ast" / "sample_1.pt").is_file()
     assert (tmp_path / "artifacts" / "topologies" / "core-cpg" / "sample_1.pt").is_file()
-
+    assert (
+        tmp_path / "artifacts" / "topologies" / "completed" / "sample_1.json"
+    ).is_file()

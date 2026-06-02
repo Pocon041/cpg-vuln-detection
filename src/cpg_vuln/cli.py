@@ -43,7 +43,13 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(report.to_dict(), indent=2))
     elif args.command == "build-topologies":
         records = read_manifest(artifacts / "data" / "manifest.jsonl")
-        build_topologies(records, artifacts / "topologies", limit=args.limit, force=args.force)
+        build_topologies(
+            records,
+            artifacts / "topologies",
+            limit=args.limit,
+            force=args.force,
+            break_stale_lock=args.break_stale_lock,
+        )
     elif args.command == "build-word2vec":
         registry = NodeTextRegistry.read(artifacts / "topologies" / "text_registry.json")
         build_word2vec_cache(
@@ -113,6 +119,7 @@ def _parser() -> argparse.ArgumentParser:
     topologies = commands.add_parser("build-topologies")
     topologies.add_argument("--limit", type=int)
     topologies.add_argument("--force", action="store_true")
+    topologies.add_argument("--break-stale-lock", action="store_true")
     word2vec = commands.add_parser("build-word2vec")
     word2vec.add_argument("--force", action="store_true")
     commands.add_parser("build-codebert-cache")
