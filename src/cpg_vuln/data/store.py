@@ -7,6 +7,7 @@ import torch
 
 from cpg_vuln.data.topology import GraphTopology
 from cpg_vuln.features.text import NodeTextRegistry, normalize_node_text
+from cpg_vuln.utils.fingerprint import write_json_atomic
 
 
 class NodeTypeRegistry:
@@ -27,8 +28,7 @@ class NodeTypeRegistry:
         return index
 
     def write(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.values, indent=2) + "\n", encoding="utf-8")
+        write_json_atomic(path, self.values)
 
     @classmethod
     def read(cls, path: Path) -> "NodeTypeRegistry":
@@ -97,4 +97,3 @@ def _line_number(value: str | None) -> int:
         return int(value) if value else -1
     except ValueError:
         return -1
-

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from cpg_vuln.data.graphml import GraphNode
+from cpg_vuln.utils.fingerprint import write_json_atomic
 
 
 _TOKEN = re.compile(
@@ -32,11 +33,7 @@ class NodeTextRegistry:
         return index
 
     def write(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(self.values, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(path, self.values)
 
     @classmethod
     def read(cls, path: Path) -> "NodeTextRegistry":
@@ -60,4 +57,3 @@ def normalize_node_text(node: GraphNode) -> str:
 
 def tokenize_c(text: str) -> list[str]:
     return _TOKEN.findall(text)
-
