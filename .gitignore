@@ -1,0 +1,53 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Editors and operating system files
+.idea/
+.vscode/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Root-level documents (keep the repository README)
+/*.doc
+/*.docx
+/*.docm
+/*.pdf
+/*.md
+!/README.md
+
+# Local datasets, generated caches, and experiment outputs
+/data/
+/F&Q/
+/artifacts/
+/outputs/
+
+# Local Superpowers planning notes
+/docs/superpowers/plans/
