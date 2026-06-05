@@ -63,7 +63,12 @@ def train_enhanced(
     config: dict,
     *,
     splits: tuple[str, ...] = ("course", "strict"),
-    variants: tuple[str, ...] = ("selective-fusion", "no-semantics", "dataflow-only"),
+    variants: tuple[str, ...] = (
+        "selective-fusion",
+        "no-semantics",
+        "dataflow-only",
+        "slice-fusion",
+    ),
     epochs: int | None = None,
     force: bool = False,
 ) -> None:
@@ -82,7 +87,7 @@ def train_enhanced(
     for split_name in splits:
         split = _read_json(artifacts / "data" / "splits" / f"{split_name}.json")
         for variant in variants:
-            view = "dataflow-cpg" if variant == "dataflow-only" else "core-cpg"
+            view = _enhanced_view(variant)
             run_dir = outputs / f"enhanced-{variant}-{split_name}"
             if _completed(run_dir, force=force):
                 continue
@@ -183,6 +188,14 @@ def _train_config(config: dict, *, epochs: int | None, learning_rate: float) -> 
     if epochs is not None:
         values["epochs"] = epochs
     return TrainConfig(**values)
+
+
+def _enhanced_view(variant: str) -> str:
+    if variant == "dataflow-only":
+        return "dataflow-cpg"
+    if variant == "slice-fusion":
+        return "slice-cpg"
+    return "core-cpg"
 
 
 def _read_json(path: Path):

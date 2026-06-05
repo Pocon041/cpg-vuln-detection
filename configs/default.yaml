@@ -36,6 +36,10 @@ model:
 training:
   epochs: 50
   patience: 8
+  checkpoint_metric: pr_auc
+  loss: focal
+  focal_gamma: 2.0
+  class_weight: [1.2, 1.0]
   weight_decay: 0.0001
   gradient_clip: 1.0
   max_nodes: 8000

@@ -157,8 +157,8 @@ def _parser() -> argparse.ArgumentParser:
     enhanced.add_argument(
         "--variants",
         nargs="+",
-        choices=("selective-fusion", "no-semantics", "dataflow-only"),
-        default=("selective-fusion", "no-semantics", "dataflow-only"),
+        choices=("selective-fusion", "no-semantics", "dataflow-only", "slice-fusion"),
+        default=("selective-fusion", "no-semantics", "dataflow-only", "slice-fusion"),
     )
     enhanced.add_argument("--splits", nargs="+", choices=("course", "strict"), default=("course", "strict"))
     enhanced.add_argument("--force", action="store_true")

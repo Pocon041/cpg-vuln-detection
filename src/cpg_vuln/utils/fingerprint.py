@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import sys
+import time
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
 
 
 _HASH_CHUNK_SIZE = 1024 * 1024
+_REPLACE_PERMISSION_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.5, 1.0)
 
 
 def stable_json_dumps(payload: object) -> str:
@@ -53,7 +55,14 @@ def temporary_path_for(final_path: Path) -> Path:
 def replace_file_atomic(temp_path: Path, final_path: Path) -> None:
     if temp_path.parent.resolve() != final_path.parent.resolve():
         raise ValueError("atomic replacement requires files in the same directory")
-    os.replace(temp_path, final_path)
+    for delay in (*_REPLACE_PERMISSION_RETRY_DELAYS, None):
+        try:
+            os.replace(temp_path, final_path)
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
 
 
 def write_json_atomic(path: Path, payload: object) -> None:

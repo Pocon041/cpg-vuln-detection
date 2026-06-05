@@ -28,9 +28,12 @@ python -m cpg_vuln audit
 - `course.json`：按标签分层随机切分。
 - `strict.json`：按规范化源码哈希分组后切分，阻止重复代码跨集合泄漏。
 
+同时，`audit` 会根据 `configs/source_map_overrides.csv` 生成 `artifacts/manifests/source_map.csv`，用于把 GraphML 中的行号映射回原始源码行号。默认源码行偏移为 `64`；如某个样本被标记为 `suspicious_default`，应人工确认偏移后写入 override。
+
 ## 运行顺序
 
 ```powershell
+python -m cpg_vuln audit
 python -m cpg_vuln build-topologies
 python -m cpg_vuln build-word2vec
 python -m cpg_vuln build-codebert-cache
@@ -52,13 +55,23 @@ python -m cpg_vuln explain
 .\scripts\run_all.ps1 -SkipCodeBert
 ```
 
-训练命令默认检测已有 `metrics.json` 并跳过已完成组合。需要重新训练时显式加入 `--force`。也可以通过 `--views`、`--embeddings`、`--splits` 和 `--variants` 缩小实验矩阵。
+训练命令默认检测已有 `metrics.json` 并跳过已完成组合。当前跳过逻辑不会自动识别模型、特征缓存或训练配置是否变化；重新训练或对比新代码时应显式加入 `--force`，或清理对应 `outputs/runs/<run-name>/`。也可以通过 `--views`、`--embeddings`、`--splits` 和 `--variants` 缩小实验矩阵。
 
-训练过程中每个 epoch 会显示一条进度条，并打印训练损失、验证集 accuracy、precision、recall、F1、ROC-AUC、PR-AUC、用于 checkpoint 选择和 early stopping 的最佳 ROC-AUC，以及剩余 patience。训练结束后会打印最终 validation 和 test 指标汇总。已经启动的训练进程不会动态加载代码修改，需要重新启动后才能看到新的输出。
+训练过程中每个 epoch 会显示进度条，并打印训练损失、验证集 accuracy、precision、recall、F1、ROC-AUC、PR-AUC、用于 checkpoint 选择和 early stopping 的最佳配置指标，以及剩余 patience。默认 `checkpoint_metric=pr_auc`，用于优先改善排序能力；默认 `loss=focal` 且负类权重略高，用于压低误报。训练结束后会打印最终 validation 和 test 指标汇总。最终分类阈值仍在验证集上按 F1 选择；增强模型默认学习率为 `1e-4`，基线模型为 `1e-3`。已经启动的训练进程不会动态加载代码修改，需要重新启动后才能看到新的输出。
 
 GraphML 约 3.4 GB，CodeBERT 需要首次下载 `microsoft/codebert-base` 并离线编码唯一节点文本。拓扑和向量缓存均支持断点续跑。训练阶段只读取缓存，不加载 Transformer。
 
 ## 缓存恢复
+
+拓扑构建以单样本事务提交，每个样本的六种视图、index 和 completion marker 使用同一个 `commit_id` 校验。重跑 `build-topologies` 时，只有 completion marker、payload、index 和 registry ID 都一致的样本才会被跳过；缺失或损坏的样本会自动重建。
+
+Windows 上如果杀毒软件或索引器短暂占用 registry 文件，原子替换会自动短退避重试。如果仍持续报 `WinError 5`，请先关闭打开 `artifacts/topologies/text_registry.json` 的编辑器/预览器，或把项目目录加入 Windows Defender 排除项。
+
+如果拓扑构建提示 `.build-topologies.lock` 已存在，说明检测到可能的并发 writer。确认没有其他构建进程后，再显式使用：
+
+```powershell
+python -m cpg_vuln build-topologies --break-stale-lock
+```
 
 特征构建会显示进度。请先等待 `build-topologies` 完成，再运行 `build-word2vec`。如果拓扑在 Word2Vec 构建后继续增长，旧模型和向量缓存会失效；使用以下命令重建：
 
@@ -75,8 +88,8 @@ python -m cpg_vuln build-codebert-cache
 ```
 
 或者预先下载好权重后运行 
+
 ```powershell
-conda activate EIT
 Remove-Item Env:HF_ENDPOINT -ErrorAction SilentlyContinue
 $env:HF_HUB_OFFLINE = "1"
 $env:TRANSFORMERS_OFFLINE = "1"
@@ -113,8 +126,9 @@ outputs/                  checkpoint、预测、指标和图表
 | PDG | `CDG`, `REACHING_DEF` |
 | core-CPG | `AST`, `CFG`, `CDG`, `REACHING_DEF` |
 | dataflow-CPG | `CFG`, `CDG`, `REACHING_DEF` |
+| slice-CPG | `AST`, `CFG`, `CDG`, `REACHING_DEF` |
 
-前三类视图用于课程基线。`core-CPG` 用于选择性融合模型，`dataflow-CPG` 用于消融。
+前三类视图用于课程基线。`core-CPG` 用于选择性融合模型，`dataflow-CPG` 用于消融。`slice-CPG` 从危险调用、数组/指针表达式等种子出发，沿控制/数据流扩展并补充局部 AST 上下文，供 `slice-fusion` 变体降低整函数噪声。
 
 ## 测试
 

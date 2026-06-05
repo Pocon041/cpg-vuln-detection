@@ -66,6 +66,7 @@ def test_build_topologies_commits_canonical_views_with_marker_last(tmp_path: Pat
 
     build_topologies([_record(tmp_path)], output_dir)
 
+    assert "slice-cpg" in CANONICAL_VIEWS
     _assert_valid_transaction(output_dir)
 
 

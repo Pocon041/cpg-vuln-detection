@@ -27,7 +27,7 @@ def test_baseline_and_enhanced_runners_consume_cached_topologies(tmp_path: Path)
     index = []
     sample_ids = [f"sample-{number}" for number in range(8)]
     for number, sample_id in enumerate(sample_ids):
-        for view in ("ast", "core-cpg", "dataflow-cpg"):
+        for view in ("ast", "core-cpg", "dataflow-cpg", "slice-cpg"):
             index.append(
                 save_topology(
                     topologies / view / f"{sample_id}.pt",
@@ -81,15 +81,23 @@ def test_baseline_and_enhanced_runners_consume_cached_topologies(tmp_path: Path)
 
     train_baselines(config, views=("ast",), embeddings=("word2vec",), splits=("course",), epochs=1)
     train_enhanced(config, splits=("course",), variants=("selective-fusion",), epochs=1)
+    train_enhanced(config, splits=("course",), variants=("slice-fusion",), epochs=1)
 
     assert (tmp_path / "outputs" / "runs" / "baseline-ast-word2vec-course" / "best.pt").is_file()
     assert (tmp_path / "outputs" / "runs" / "enhanced-selective-fusion-course" / "best.pt").is_file()
+    assert (tmp_path / "outputs" / "runs" / "enhanced-slice-fusion-course" / "best.pt").is_file()
     enhanced_metrics = json.loads(
         (
             tmp_path / "outputs" / "runs" / "enhanced-selective-fusion-course" / "metrics.json"
         ).read_text(encoding="utf-8")
     )
     assert enhanced_metrics["config"]["learning_rate"] == 1e-4
+    slice_metrics = json.loads(
+        (
+            tmp_path / "outputs" / "runs" / "enhanced-slice-fusion-course" / "metrics.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert slice_metrics["run_metadata"]["view"] == "slice-cpg"
     baseline_metrics = tmp_path / "outputs" / "runs" / "baseline-ast-word2vec-course" / "metrics.json"
     baseline_metrics.write_text("keep existing completed run", encoding="utf-8")
 

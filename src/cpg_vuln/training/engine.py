@@ -28,6 +28,24 @@ class TrainConfig:
     max_edges: int = 60000
     seed: int = 42
     device: str = "cuda"
+    checkpoint_metric: str = "roc_auc"
+    loss: str = "cross_entropy"
+    focal_gamma: float = 2.0
+    class_weight: tuple[float, float] | list[float] | None = None
+
+    def __post_init__(self) -> None:
+        allowed_metrics = {"loss", "f1", "roc_auc", "pr_auc"}
+        if self.checkpoint_metric not in allowed_metrics:
+            raise ValueError(
+                f"checkpoint_metric must be one of {sorted(allowed_metrics)}"
+            )
+        allowed_losses = {"cross_entropy", "focal"}
+        if self.loss not in allowed_losses:
+            raise ValueError(f"loss must be one of {sorted(allowed_losses)}")
+        if self.focal_gamma < 0:
+            raise ValueError("focal_gamma must be non-negative")
+        if self.class_weight is not None and len(self.class_weight) != 2:
+            raise ValueError("class_weight must contain two values for labels 0 and 1")
 
 
 def run_training(
@@ -53,7 +71,7 @@ def run_training(
     train_loader, train_sampler = _loader(train_dataset, config=config, shuffle=True)
     val_loader, _ = _loader(val_dataset, config=config, shuffle=False)
     test_loader, _ = _loader(test_dataset, config=config, shuffle=False)
-    best_roc_auc: float | None = None
+    best_checkpoint_score: float | None = None
     has_checkpoint = False
     remaining_patience = config.patience
     history: list[dict[str, float | int | None]] = []
@@ -65,7 +83,17 @@ def run_training(
     )
     for epoch in epoch_progress:
         train_sampler.set_epoch(epoch)
-        loss = _train_epoch(model, train_loader, optimizer, scaler, device, config.gradient_clip)
+        loss = _train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            scaler,
+            device,
+            config.gradient_clip,
+            loss_name=config.loss,
+            focal_gamma=config.focal_gamma,
+            class_weight=config.class_weight,
+        )
         validation = _predict(model, val_loader, device)
         threshold = select_f1_threshold(validation["labels"], validation["probabilities"])
         validation_metrics = classification_metrics(
@@ -78,18 +106,38 @@ def run_training(
                 "loss": loss,
                 "val_f1": validation_metrics["f1"],
                 "val_roc_auc": validation_roc_auc,
+                "val_pr_auc": validation_metrics["pr_auc"],
+                "checkpoint_metric": config.checkpoint_metric,
+                "checkpoint_score": _checkpoint_score(
+                    config.checkpoint_metric,
+                    loss=loss,
+                    metrics=validation_metrics,
+                ),
             }
         )
         should_stop = False
-        has_better_roc_auc = validation_roc_auc is not None and (
-            best_roc_auc is None or float(validation_roc_auc) > best_roc_auc
+        checkpoint_score = _checkpoint_score(
+            config.checkpoint_metric,
+            loss=loss,
+            metrics=validation_metrics,
         )
-        if has_better_roc_auc or not has_checkpoint:
-            if has_better_roc_auc:
-                best_roc_auc = float(validation_roc_auc)
+        has_better_checkpoint = _is_better_checkpoint_score(
+            config.checkpoint_metric,
+            checkpoint_score,
+            best_checkpoint_score,
+        )
+        if has_better_checkpoint or not has_checkpoint:
+            if has_better_checkpoint:
+                best_checkpoint_score = float(checkpoint_score)
             remaining_patience = config.patience
             torch.save(
-                {"model_state": model.state_dict(), "epoch": epoch + 1, "threshold": threshold},
+                {
+                    "model_state": model.state_dict(),
+                    "epoch": epoch + 1,
+                    "threshold": threshold,
+                    "checkpoint_metric": config.checkpoint_metric,
+                    "checkpoint_score": checkpoint_score,
+                },
                 output_dir / "best.pt",
             )
             has_checkpoint = True
@@ -99,7 +147,7 @@ def run_training(
         epoch_progress.set_postfix(
             loss=f"{loss:.4f}",
             val_f1=_format_metric(validation_metrics["f1"]),
-            best_roc_auc=_format_metric(best_roc_auc),
+            best_checkpoint=_format_metric(best_checkpoint_score),
             patience=remaining_patience,
         )
         tqdm.write(
@@ -107,7 +155,8 @@ def run_training(
                 epoch=epoch + 1,
                 loss=loss,
                 metrics=validation_metrics,
-                best_roc_auc=best_roc_auc,
+                checkpoint_metric=config.checkpoint_metric,
+                best_checkpoint_score=best_checkpoint_score,
                 remaining_patience=remaining_patience,
             )
         )
@@ -124,6 +173,8 @@ def run_training(
         "run_metadata": run_metadata or {},
         "elapsed_seconds": elapsed,
         "best_epoch": checkpoint["epoch"],
+        "checkpoint_metric": config.checkpoint_metric,
+        "checkpoint_score": checkpoint.get("checkpoint_score"),
         "validation": classification_metrics(
             validation["labels"], validation["probabilities"], threshold=threshold
         ),
@@ -139,7 +190,18 @@ def run_training(
     return result
 
 
-def _train_epoch(model, loader, optimizer, scaler, device, gradient_clip: float) -> float:
+def _train_epoch(
+    model,
+    loader,
+    optimizer,
+    scaler,
+    device,
+    gradient_clip: float,
+    *,
+    loss_name: str = "cross_entropy",
+    focal_gamma: float = 2.0,
+    class_weight: Sequence[float] | None = None,
+) -> float:
     model.train()
     losses_and_samples: list[tuple[float, int]] = []
     for batch in loader:
@@ -148,7 +210,13 @@ def _train_epoch(model, loader, optimizer, scaler, device, gradient_clip: float)
         try:
             with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
                 output = model(batch)
-                loss = nn.functional.cross_entropy(output.logits, batch.y)
+                loss = _classification_loss(
+                    output.logits,
+                    batch.y,
+                    loss_name=loss_name,
+                    focal_gamma=focal_gamma,
+                    class_weight=class_weight,
+                )
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
@@ -159,6 +227,35 @@ def _train_epoch(model, loader, optimizer, scaler, device, gradient_clip: float)
             raise RuntimeError(f"CUDA OOM while processing samples: {sample_ids}") from error
         losses_and_samples.append((float(loss.detach().cpu()), int(batch.y.numel())))
     return _sample_weighted_mean_loss(losses_and_samples)
+
+
+def _classification_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    loss_name: str,
+    focal_gamma: float,
+    class_weight: Sequence[float] | None,
+) -> torch.Tensor:
+    weight = _class_weight_tensor(class_weight, logits)
+    if loss_name == "cross_entropy":
+        return nn.functional.cross_entropy(logits, targets, weight=weight)
+    if loss_name != "focal":
+        raise ValueError(f"unsupported loss: {loss_name}")
+    unweighted = nn.functional.cross_entropy(logits, targets, reduction="none")
+    weighted = nn.functional.cross_entropy(logits, targets, weight=weight, reduction="none")
+    true_class_probability = torch.exp(-unweighted)
+    focal_factor = (1 - true_class_probability).pow(focal_gamma)
+    return (focal_factor * weighted).mean()
+
+
+def _class_weight_tensor(
+    class_weight: Sequence[float] | None,
+    logits: torch.Tensor,
+) -> torch.Tensor | None:
+    if class_weight is None:
+        return None
+    return torch.tensor(class_weight, dtype=logits.dtype, device=logits.device)
 
 
 def _sample_weighted_mean_loss(losses_and_samples: Sequence[tuple[float, int]]) -> float:
@@ -248,7 +345,8 @@ def _epoch_summary(
     epoch: int,
     loss: float,
     metrics: dict[str, object],
-    best_roc_auc: float | None,
+    checkpoint_metric: str,
+    best_checkpoint_score: float | None,
     remaining_patience: int,
 ) -> str:
     return (
@@ -259,7 +357,8 @@ def _epoch_summary(
         f"val_f1={_format_metric(metrics['f1'])} "
         f"val_roc_auc={_format_metric(metrics['roc_auc'])} "
         f"val_pr_auc={_format_metric(metrics['pr_auc'])} "
-        f"best_roc_auc={_format_metric(best_roc_auc)} patience={remaining_patience}"
+        f"best_{checkpoint_metric}={_format_metric(best_checkpoint_score)} "
+        f"patience={remaining_patience}"
     )
 
 
@@ -279,3 +378,29 @@ def _metrics_summary(name: str, metrics: object) -> str:
 
 def _format_metric(value: object) -> str:
     return "n/a" if value is None else f"{float(value):.4f}"
+
+
+def _checkpoint_score(
+    checkpoint_metric: str,
+    *,
+    loss: float,
+    metrics: dict[str, object],
+) -> float | None:
+    if checkpoint_metric == "loss":
+        return float(loss)
+    value = metrics.get(checkpoint_metric)
+    return None if value is None else float(value)
+
+
+def _is_better_checkpoint_score(
+    checkpoint_metric: str,
+    score: float | None,
+    best_score: float | None,
+) -> bool:
+    if score is None:
+        return False
+    if best_score is None:
+        return True
+    if checkpoint_metric == "loss":
+        return score < best_score
+    return score > best_score

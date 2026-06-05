@@ -109,6 +109,28 @@ def test_train_epoch_passes_actual_batch_sizes_to_weighted_loss(monkeypatch) -> 
     assert loss == 123.0
 
 
+def test_focal_loss_downweights_easy_examples() -> None:
+    logits = torch.tensor([[4.0, -4.0], [-4.0, 4.0]], dtype=torch.float32)
+    targets = torch.tensor([0, 1], dtype=torch.long)
+
+    cross_entropy = engine._classification_loss(
+        logits,
+        targets,
+        loss_name="cross_entropy",
+        focal_gamma=2.0,
+        class_weight=None,
+    )
+    focal = engine._classification_loss(
+        logits,
+        targets,
+        loss_name="focal",
+        focal_gamma=2.0,
+        class_weight=None,
+    )
+
+    assert focal < cross_entropy
+
+
 def test_training_selects_checkpoint_by_validation_roc_auc(tmp_path: Path, monkeypatch) -> None:
     metric_values = iter(
         [
@@ -124,7 +146,7 @@ def test_training_selects_checkpoint_by_validation_roc_auc(tmp_path: Path, monke
         "sample_ids": ["sample-0", "sample-1"],
         "explanations": {},
     }
-    monkeypatch.setattr(engine, "_train_epoch", lambda *args: 0.5)
+    monkeypatch.setattr(engine, "_train_epoch", lambda *args, **kwargs: 0.5)
     monkeypatch.setattr(engine, "_predict", lambda *args: prediction)
     monkeypatch.setattr(engine, "classification_metrics", lambda *args, **kwargs: next(metric_values))
 
@@ -142,6 +164,40 @@ def test_training_selects_checkpoint_by_validation_roc_auc(tmp_path: Path, monke
     assert history[1]["val_roc_auc"] == 0.8
 
 
+def test_training_can_select_checkpoint_by_validation_f1(tmp_path: Path, monkeypatch) -> None:
+    metric_values = iter(
+        [
+            _metrics(f1=0.9, roc_auc=0.6),
+            _metrics(f1=0.7, roc_auc=0.8),
+            _metrics(f1=0.9, roc_auc=0.6),
+            _metrics(f1=0.5, roc_auc=0.5),
+        ]
+    )
+    prediction = {
+        "labels": np.asarray([0, 1], dtype=np.int64),
+        "probabilities": np.asarray([0.1, 0.9], dtype=np.float32),
+        "sample_ids": ["sample-0", "sample-1"],
+        "explanations": {},
+    }
+    monkeypatch.setattr(engine, "_train_epoch", lambda *args, **kwargs: 0.5)
+    monkeypatch.setattr(engine, "_predict", lambda *args: prediction)
+    monkeypatch.setattr(engine, "classification_metrics", lambda *args, **kwargs: next(metric_values))
+
+    result = run_training(
+        nn.Linear(1, 2),
+        train_dataset=[],
+        val_dataset=[],
+        test_dataset=[],
+        output_dir=tmp_path,
+        config=TrainConfig(epochs=2, patience=2, device="cpu", checkpoint_metric="f1"),
+    )
+
+    history = json.loads((tmp_path / "history.json").read_text(encoding="utf-8"))
+    assert result["best_epoch"] == 1
+    assert history[0]["checkpoint_score"] == 0.9
+    assert result["config"]["checkpoint_metric"] == "f1"
+
+
 def test_training_saves_fallback_checkpoint_and_stops_when_validation_roc_auc_is_none(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -151,7 +207,7 @@ def test_training_saves_fallback_checkpoint_and_stops_when_validation_roc_auc_is
         "sample_ids": ["sample-0", "sample-1"],
         "explanations": {},
     }
-    monkeypatch.setattr(engine, "_train_epoch", lambda *args: 0.5)
+    monkeypatch.setattr(engine, "_train_epoch", lambda *args, **kwargs: 0.5)
     monkeypatch.setattr(engine, "_predict", lambda *args: prediction)
 
     with warnings.catch_warnings():

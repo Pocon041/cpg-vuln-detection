@@ -41,6 +41,48 @@ def test_cli_passes_requested_baseline_matrix_filters(tmp_path: Path, monkeypatc
     }
 
 
+def test_cli_accepts_slice_fusion_enhanced_variant(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "paths": {
+                    "artifacts_dir": str(tmp_path / "artifacts"),
+                    "outputs_dir": str(tmp_path / "outputs"),
+                }
+            }
+        )
+    )
+    received: dict[str, object] = {}
+
+    def fake_train_enhanced(config, **kwargs):
+        received.update(kwargs)
+
+    monkeypatch.setattr(cli, "train_enhanced", fake_train_enhanced)
+
+    cli.main(
+        [
+            "--config",
+            str(config),
+            "train-enhanced",
+            "--variants",
+            "slice-fusion",
+            "--splits",
+            "strict",
+            "--epochs",
+            "1",
+            "--force",
+        ]
+    )
+
+    assert received == {
+        "splits": ("strict",),
+        "variants": ("slice-fusion",),
+        "epochs": 1,
+        "force": True,
+    }
+
+
 def test_cli_passes_word2vec_force_and_batch_size(tmp_path: Path, monkeypatch) -> None:
     artifacts = tmp_path / "artifacts"
     NodeTextRegistry(["return 0"]).write(artifacts / "topologies" / "text_registry.json")

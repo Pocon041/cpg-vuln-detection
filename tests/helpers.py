@@ -7,6 +7,7 @@ def write_graphml(
     path: Path,
     *,
     include_macro_helper: bool = False,
+    include_unrelated_ast: bool = False,
     line_number: int = 4,
 ) -> None:
     helper = """
@@ -23,6 +24,10 @@ def write_graphml(
     </node>
     <edge source="90" target="91"><data key="labelE">AST</data></edge>
     """ if include_macro_helper else ""
+    unrelated_ast = """
+    <node id="7"><data key="labelV">IDENTIFIER</data><data key="node__IDENTIFIER__CODE">unused</data><data key="node__IDENTIFIER__LINE_NUMBER">99</data></node>
+    <edge source="2" target="7"><data key="labelE">AST</data></edge>
+    """ if include_unrelated_ast else ""
     path.write_text(
         f"""<?xml version="1.0" encoding="UTF-8"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns">
@@ -51,6 +56,7 @@ def write_graphml(
     <node id="5"><data key="labelV">METHOD</data><data key="node__METHOD__NAME">strcpy</data><data key="node__METHOD__IS_EXTERNAL">true</data></node>
     <node id="6"><data key="labelV">METHOD</data><data key="node__METHOD__NAME">&lt;global&gt;</data><data key="node__METHOD__IS_EXTERNAL">false</data></node>
     {helper}
+    {unrelated_ast}
     <edge source="1" target="2"><data key="labelE">AST</data></edge>
     <edge source="2" target="3"><data key="labelE">AST</data></edge>
     <edge source="3" target="4"><data key="labelE">AST</data></edge>

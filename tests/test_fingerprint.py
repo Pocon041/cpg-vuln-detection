@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,38 @@ def test_write_json_atomic_preserves_replace_error_when_cleanup_fails(
 
     with pytest.raises(RuntimeError, match="replace failed"):
         write_json_atomic(tmp_path / "registry.json", {"value": "updated"})
+
+
+def test_replace_file_atomic_retries_transient_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_path = tmp_path / "registry.json"
+    temp_path = tmp_path / ".registry.json.tmp"
+    final_path.write_text("old", encoding="utf-8")
+    temp_path.write_text("new", encoding="utf-8")
+    real_replace = fingerprint.os.replace
+    attempts = 0
+    sleeps: list[float] = []
+
+    def transient_permission_error(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(5, "Access is denied", str(target))
+        real_replace(source, target)
+
+    monkeypatch.setattr(fingerprint.os, "replace", transient_permission_error)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    replace_file_atomic(temp_path, final_path)
+
+    assert attempts == 3
+    assert sleeps == [0.05, 0.1]
+    assert final_path.read_text(encoding="utf-8") == "new"
+    assert not temp_path.exists()
 
 
 def test_replace_file_atomic_rejects_cross_directory_replacement(tmp_path: Path) -> None:

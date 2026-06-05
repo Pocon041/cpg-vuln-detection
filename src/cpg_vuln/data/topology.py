@@ -11,6 +11,23 @@ VIEW_RELATIONS = {
     "pdg": ("CDG", "REACHING_DEF"),
     "core-cpg": ("AST", "CFG", "CDG", "REACHING_DEF"),
     "dataflow-cpg": ("CFG", "CDG", "REACHING_DEF"),
+    "slice-cpg": ("AST", "CFG", "CDG", "REACHING_DEF"),
+}
+
+FLOW_RELATIONS = {"CFG", "CDG", "REACHING_DEF"}
+RISKY_CALL_TOKENS = {
+    "alloc",
+    "free",
+    "gets",
+    "memcpy",
+    "memmove",
+    "read",
+    "recv",
+    "scanf",
+    "sprintf",
+    "strcat",
+    "strcpy",
+    "strlen",
 }
 
 
@@ -43,6 +60,8 @@ def build_view(graph: ParsedGraph, root: GraphNode, view: str) -> GraphTopology:
         for edge in base_edges:
             selected_ids.add(edge.source)
             selected_ids.add(edge.target)
+    elif view == "slice-cpg":
+        selected_ids = _slice_node_ids(graph, root, closure, base_edges)
     else:
         selected_ids = closure
     original_node_ids = sorted(selected_ids, key=_node_sort_key)
@@ -66,7 +85,10 @@ def build_view(graph: ParsedGraph, root: GraphNode, view: str) -> GraphTopology:
     relation_ids["SELF_LOOP"] = len(relation_ids)
     edges: list[tuple[int, int]] = []
     edge_types: list[int] = []
-    for edge in base_edges:
+    relation_edges = [
+        edge for edge in base_edges if edge.source in local_ids and edge.target in local_ids
+    ]
+    for edge in relation_edges:
         source = local_ids[edge.source]
         target = local_ids[edge.target]
         edges.extend(((source, target), (target, source)))
@@ -79,10 +101,72 @@ def build_view(graph: ParsedGraph, root: GraphNode, view: str) -> GraphTopology:
         original_node_ids=original_node_ids,
         nodes=nodes,
         edges=edges,
-        relation_names={edge.label for edge in base_edges},
+        relation_names={edge.label for edge in relation_edges},
         edge_types=edge_types,
         edge_type_names=relation_ids,
     )
+
+
+def _slice_node_ids(
+    graph: ParsedGraph,
+    root: GraphNode,
+    closure: set[str],
+    base_edges: list,
+) -> set[str]:
+    ast_parents: dict[str, str] = {}
+    ast_children: dict[str, list[str]] = {}
+    flow_neighbors: dict[str, set[str]] = {}
+    for edge in base_edges:
+        if edge.label == "AST":
+            ast_parents[edge.target] = edge.source
+            ast_children.setdefault(edge.source, []).append(edge.target)
+        elif edge.label in FLOW_RELATIONS:
+            flow_neighbors.setdefault(edge.source, set()).add(edge.target)
+            flow_neighbors.setdefault(edge.target, set()).add(edge.source)
+
+    seeds = {
+        node.node_id
+        for node in graph.nodes.values()
+        if node.node_id in closure and _is_risky_seed(node)
+    }
+    if not seeds:
+        seeds = {
+            node_id
+            for edge in base_edges
+            if edge.label in FLOW_RELATIONS
+            for node_id in (edge.source, edge.target)
+        }
+    if not seeds:
+        return {root.node_id}
+
+    selected = {root.node_id, *seeds}
+    frontier = set(seeds)
+    for _ in range(2):
+        next_frontier: set[str] = set()
+        for node_id in frontier:
+            next_frontier.update(flow_neighbors.get(node_id, set()))
+        next_frontier &= closure
+        next_frontier -= selected
+        selected.update(next_frontier)
+        frontier = next_frontier
+
+    context_nodes = set(selected)
+    for node_id in list(selected):
+        context_nodes.update(ast_children.get(node_id, ()))
+        parent = ast_parents.get(node_id)
+        while parent is not None and parent in closure:
+            context_nodes.add(parent)
+            if parent == root.node_id:
+                break
+            parent = ast_parents.get(parent)
+    return context_nodes & closure
+
+
+def _is_risky_seed(node: GraphNode) -> bool:
+    code = node.attrs.get("CODE", node.attrs.get("NAME", "")).lower()
+    if node.label == "CALL" and any(token in code for token in RISKY_CALL_TOKENS):
+        return True
+    return any(symbol in code for symbol in ("[", "->"))
 
 
 def _bidirectional_edges(edges: list, local_ids: dict[str, int]) -> list[tuple[int, int]]:
