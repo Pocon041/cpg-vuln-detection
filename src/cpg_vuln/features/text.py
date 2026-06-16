@@ -1,18 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 from pathlib import Path
 
 from cpg_vuln.data.graphml import GraphNode
+from cpg_vuln.features.lexer import lex_c
 from cpg_vuln.utils.fingerprint import write_json_atomic
-
-
-_TOKEN = re.compile(
-    r"[A-Za-z_][A-Za-z_0-9]*|0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?|"
-    r"==|!=|<=|>=|->|\+\+|--|&&|\|\||<<|>>|"
-    r"[{}()\[\];,.?:~!%^&*+\-=/<>|]"
-)
 
 
 class NodeTextRegistry:
@@ -31,6 +25,13 @@ class NodeTextRegistry:
         self.values.append(text)
         self._ids[text] = index
         return index
+
+    def sha256(self) -> str:
+        digest = hashlib.sha256()
+        for value in self.values:
+            digest.update(value.encode("utf-8"))
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     def write(self, path: Path) -> None:
         write_json_atomic(path, self.values)
@@ -56,4 +57,4 @@ def normalize_node_text(node: GraphNode) -> str:
 
 
 def tokenize_c(text: str) -> list[str]:
-    return _TOKEN.findall(text)
+    return [token.text for token in lex_c(text)]

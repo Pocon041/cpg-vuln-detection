@@ -1,0 +1,7 @@
+features:
+  node_text_normalization:
+    mode: full-anon
+    version: 1
+    api_taxonomy_version: 1
+    tokenizer_version: 2
+  word2vec_training_scope: transductive

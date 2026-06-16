@@ -29,6 +29,13 @@ DEFAULT_CONFIG = {
         },
     },
     "features": {
+        "node_text_normalization": {
+            "mode": "raw",
+            "version": 1,
+            "api_taxonomy_version": 1,
+            "tokenizer_version": 2,
+        },
+        "word2vec_training_scope": "transductive",
         "word2vec_dim": 128,
         "word2vec_epochs": 10,
         "word2vec_batch_size": 1024,
@@ -39,6 +46,13 @@ DEFAULT_CONFIG = {
         "function_overlap": 256,
     },
     "model": {"hidden_dim": 128, "node_type_dim": 32, "dropout": 0.3},
+    "devign": {
+        "hidden_dim": 200,
+        "dropout": 0.2,
+        "steps": 6,
+        "max_nodes": 205,
+        "weight_decay": 1.3e-6,
+    },
     "training": {
         "epochs": 50,
         "patience": 8,

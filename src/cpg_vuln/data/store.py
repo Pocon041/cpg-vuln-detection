@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import torch
 
 from cpg_vuln.data.topology import GraphTopology
+from cpg_vuln.features.normalization import (
+    IdentifierSemanticNormalizer,
+    NormalizationSpec,
+    ScopeContext,
+)
 from cpg_vuln.features.text import NodeTextRegistry, normalize_node_text
 from cpg_vuln.utils.fingerprint import write_json_atomic
 
 
-TOPOLOGY_CACHE_SCHEMA_VERSION = 1
+TOPOLOGY_CACHE_SCHEMA_VERSION = 2
 
 
 class NodeTypeRegistry:
@@ -72,7 +78,14 @@ def build_topology_payload(
     node_types: NodeTypeRegistry,
     *,
     commit_id: str,
+    normalizer: IdentifierSemanticNormalizer | None = None,
+    scope: ScopeContext | None = None,
+    spec: NormalizationSpec | None = None,
 ) -> dict[str, object]:
+    spec = spec or NormalizationSpec(mode="raw")
+    normalizer = normalizer or IdentifierSemanticNormalizer(spec)
+    if spec.mode != "raw" and scope is None:
+        raise ValueError(f"{spec.mode} normalization requires ScopeContext")
     edge_index = torch.tensor(topology.edges, dtype=torch.long)
     if edge_index.numel():
         edge_index = edge_index.t().contiguous()
@@ -82,11 +95,21 @@ def build_topology_payload(
         "cache_schema_version": TOPOLOGY_CACHE_SCHEMA_VERSION,
         "commit_id": commit_id,
         "sample_id": sample_id,
+        "normalization_mode": spec.mode,
+        "normalization_key": spec.normalization_key,
+        "normalization_fingerprint": spec.fingerprint,
         "y": torch.tensor([label], dtype=torch.long),
         "view": topology.view,
         "edge_index": edge_index,
         "text_id": torch.tensor(
-            [texts.add(normalize_node_text(node)) for node in topology.nodes],
+            [
+                texts.add(
+                    normalizer.normalize_node(node, scope)
+                    if scope is not None
+                    else normalize_node_text(node)
+                )
+                for node in topology.nodes
+            ],
             dtype=torch.long,
         ),
         "node_type_id": torch.tensor(
@@ -107,6 +130,24 @@ def build_topology_payload(
     }
     if topology.edge_types:
         payload["edge_type"] = torch.tensor(topology.edge_types, dtype=torch.long)
+    payload["node_labels"] = [node.label for node in topology.nodes]
+    payload["node_names"] = [_attr(node, "NAME") for node in topology.nodes]
+    payload["method_full_names"] = [_attr(node, "METHOD_FULL_NAME") for node in topology.nodes]
+    payload["control_structure_types"] = [
+        _attr(node, "CONTROL_STRUCTURE_TYPE") for node in topology.nodes
+    ]
+    payload["node_type_histogram"] = dict(
+        sorted(Counter(payload["node_labels"]).items())
+    )
+    payload["edge_type_histogram"] = (
+        {
+            relation: int((payload["edge_type"] == relation_id).sum())
+            for relation, relation_id in payload["edge_type_names"].items()
+            if not relation.endswith("_REVERSE") and relation != "SELF_LOOP"
+        }
+        if "edge_type" in payload
+        else {}
+    )
     return payload
 
 
@@ -138,3 +179,7 @@ def _line_number(value: str | None) -> int:
         return int(value) if value else -1
     except ValueError:
         return -1
+
+
+def _attr(node, name: str) -> str:
+    return str(node.attrs.get(name, ""))

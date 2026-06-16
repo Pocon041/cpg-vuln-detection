@@ -23,12 +23,14 @@ class DynamicBatchSampler(Sampler[list[int]]):
         max_edges: int,
         shuffle: bool,
         seed: int = 42,
+        skip_oversized: bool = False,
     ) -> None:
         self.sizes = sizes
         self.max_nodes = max_nodes
         self.max_edges = max_edges
         self.shuffle = shuffle
         self.seed = seed
+        self.skip_oversized = skip_oversized
         self.epoch = 0
 
     def __iter__(self) -> Iterator[list[int]]:
@@ -42,6 +44,8 @@ class DynamicBatchSampler(Sampler[list[int]]):
             size = self.sizes[index]
             oversized = size.nodes > self.max_nodes or size.edges > self.max_edges
             exceeds_batch = nodes + size.nodes > self.max_nodes or edges + size.edges > self.max_edges
+            if oversized and self.skip_oversized:
+                continue
             if batch and (oversized or exceeds_batch):
                 yield batch
                 batch, nodes, edges = [], 0, 0
@@ -59,4 +63,3 @@ class DynamicBatchSampler(Sampler[list[int]]):
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
-

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
-from torch_geometric.data import Data
 
 from cpg_vuln.data.batch import GraphSize
 from cpg_vuln.data.store import load_topology
 from cpg_vuln.features.cache import MemmapFeatureCache
+
+if TYPE_CHECKING:
+    from torch_geometric.data import Data
 
 
 class TopologyDataset:
@@ -29,7 +32,9 @@ class TopologyDataset:
     def __len__(self) -> int:
         return len(self.topology_paths)
 
-    def __getitem__(self, index: int) -> Data:
+    def __getitem__(self, index: int) -> "Data":
+        from torch_geometric.data import Data
+
         payload = load_topology(self.topology_paths[index])
         text_ids = payload["text_id"]
         data = Data(

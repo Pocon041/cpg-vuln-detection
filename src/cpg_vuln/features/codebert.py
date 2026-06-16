@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from cpg_vuln.data.audit import ManifestRecord
-from cpg_vuln.features.cache import MemmapFeatureCache
+from cpg_vuln.data.graphml import GraphMLParser, choose_primary_method
+from cpg_vuln.features.cache import FeatureCacheMetadata, MemmapFeatureCache
+from cpg_vuln.features.normalization import (
+    NormalizationSpec,
+    build_scope_context,
+    normalize_source_text,
+    sha256_json,
+)
 from cpg_vuln.features.text import NodeTextRegistry
 
 
@@ -117,14 +124,37 @@ def build_node_codebert_cache(
     model_name: str = "microsoft/codebert-base",
     max_length: int = 64,
     batch_size: int = 64,
+    normalization_spec: NormalizationSpec | None = None,
 ) -> MemmapFeatureCache:
     encoder = encoder or CodeBertEncoder(model_name)
-    cache = MemmapFeatureCache.create(output_dir, rows=len(registry), dim=encoder.dim)
+    normalization_spec = normalization_spec or NormalizationSpec(mode="raw")
+    cache = MemmapFeatureCache.create(
+        output_dir,
+        rows=len(registry),
+        dim=encoder.dim,
+        metadata=FeatureCacheMetadata(
+            rows=len(registry),
+            dim=encoder.dim,
+            dtype="float16",
+            normalization_key=normalization_spec.normalization_key,
+            normalization_fingerprint=normalization_spec.fingerprint,
+            text_registry_sha256=registry.sha256(),
+            producer="node-codebert",
+            producer_fingerprint=sha256_json(
+                {
+                    "producer": "node-codebert",
+                    "model_name": model_name,
+                    "max_length": max_length,
+                }
+            ),
+        ),
+    )
     pending = cache.pending_indices()
     for start in tqdm(
         range(0, len(pending), batch_size),
         desc="build CodeBERT node features",
         unit="batch",
+        ascii=True,
     ):
         indices = pending[start : start + batch_size]
         values = encoder.encode_texts(
@@ -145,24 +175,79 @@ def build_function_codebert_cache(
     max_content_tokens: int = 510,
     overlap: int = 256,
     batch_size: int = 8,
+    normalization_spec: NormalizationSpec | None = None,
+    source_transform: Callable[[str, ManifestRecord], str] | None = None,
 ) -> tuple[MemmapFeatureCache, dict[str, int]]:
     encoder = encoder or CodeBertEncoder(model_name)
+    normalization_spec = normalization_spec or NormalizationSpec(mode="raw")
+    source_normalization = (
+        "raw"
+        if normalization_spec.mode == "raw"
+        else normalization_spec.normalization_key
+    )
+    normalization_fingerprint = (
+        "function-source-raw"
+        if normalization_spec.mode == "raw"
+        else normalization_spec.fingerprint
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
+    function_producer_payload = {
+        "producer": "function-codebert",
+        "model_name": model_name,
+        "max_content_tokens": max_content_tokens,
+        "overlap": overlap,
+        "function_source_normalization": source_normalization,
+        "normalization_fingerprint": normalization_fingerprint,
+    }
+    producer_fingerprint = sha256_json(function_producer_payload)
+    (output_dir / "source_normalization.json").write_text(
+        json.dumps(
+            {
+                "function_source_normalization": source_normalization,
+                "normalization_fingerprint": normalization_fingerprint,
+                "producer_fingerprint": producer_fingerprint,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     sample_ids = [record.sample_id for record in records]
     indices = {sample_id: index for index, sample_id in enumerate(sample_ids)}
     (output_dir / "function_indices.json").write_text(
         json.dumps(indices, indent=2) + "\n",
         encoding="utf-8",
     )
-    cache = MemmapFeatureCache.create(output_dir / "features", rows=len(records), dim=encoder.dim)
+    cache = MemmapFeatureCache.create(
+        output_dir / "features",
+        rows=len(records),
+        dim=encoder.dim,
+        metadata=FeatureCacheMetadata(
+            rows=len(records),
+            dim=encoder.dim,
+            dtype="float16",
+            normalization_key=f"function-source-{source_normalization}",
+            normalization_fingerprint=normalization_fingerprint,
+            text_registry_sha256="",
+            producer="function-codebert",
+            producer_fingerprint=producer_fingerprint,
+        ),
+    )
     by_id = {record.sample_id: record for record in records}
     for index in tqdm(
         cache.pending_indices(),
         desc="build CodeBERT function features",
         unit="function",
+        ascii=True,
     ):
         sample_id = sample_ids[index]
         source = Path(by_id[sample_id].source_path).read_text(encoding="utf-8", errors="replace")
+        source = transform_function_source(
+            source,
+            by_id[sample_id],
+            normalization_spec=normalization_spec,
+            source_transform=source_transform,
+        )
         vector = encoder.encode_function(
             source,
             max_content_tokens=max_content_tokens,
@@ -171,3 +256,20 @@ def build_function_codebert_cache(
         )
         cache.write([index], vector[None, :])
     return cache, indices
+
+
+def transform_function_source(
+    source: str,
+    record: ManifestRecord,
+    *,
+    normalization_spec: NormalizationSpec,
+    source_transform: Callable[[str, ManifestRecord], str] | None = None,
+) -> str:
+    if source_transform is not None:
+        return source_transform(source, record)
+    if normalization_spec.mode == "raw":
+        return source
+    graph = GraphMLParser().parse(Path(record.graphml_path))
+    root = choose_primary_method(graph)
+    scope = build_scope_context(graph, root, normalization_spec)
+    return normalize_source_text(source, scope, normalization_spec)

@@ -25,6 +25,11 @@ from cpg_vuln.data.store import (
     topology_index_record,
 )
 from cpg_vuln.data.topology import VIEW_RELATIONS, build_view
+from cpg_vuln.features.normalization import (
+    IdentifierSemanticNormalizer,
+    NormalizationSpec,
+    build_scope_context,
+)
 from cpg_vuln.features.text import NodeTextRegistry
 from cpg_vuln.utils.fingerprint import (
     replace_file_atomic,
@@ -45,7 +50,9 @@ def build_topologies(
     limit: int | None = None,
     force: bool = False,
     break_stale_lock: bool = False,
+    normalization_spec: NormalizationSpec | None = None,
 ) -> list[dict[str, object]]:
+    normalization_spec = normalization_spec or NormalizationSpec(mode="raw")
     output_dir.mkdir(parents=True, exist_ok=True)
     texts_path = output_dir / "text_registry.json"
     types_path = output_dir / "node_type_registry.json"
@@ -56,9 +63,14 @@ def build_topologies(
         index = _read_index(index_path)
         selected = records[:limit] if limit is not None else records
         parser = GraphMLParser()
-        for record in tqdm(selected, desc="build topologies"):
+        for record in tqdm(selected, desc="build topologies", ascii=True):
             if not force and _sample_is_complete(
-                record.sample_id, output_dir, index, texts, node_types
+                record.sample_id,
+                output_dir,
+                index,
+                texts,
+                node_types,
+                normalization_spec,
             ):
                 continue
             index = _commit_sample(
@@ -68,6 +80,7 @@ def build_topologies(
                 texts,
                 node_types,
                 parser,
+                normalization_spec,
             )
         return index
 
@@ -79,12 +92,15 @@ def _commit_sample(
     texts: NodeTextRegistry,
     node_types: NodeTypeRegistry,
     parser: GraphMLParser,
+    normalization_spec: NormalizationSpec,
 ) -> list[dict[str, object]]:
     marker_path = _marker_path(output_dir, record.sample_id)
     marker_path.unlink(missing_ok=True)
     commit_id = uuid.uuid4().hex
     graph = parser.parse(Path(record.graphml_path))
     root = choose_primary_method(graph)
+    scope = build_scope_context(graph, root, normalization_spec)
+    normalizer = IdentifierSemanticNormalizer(normalization_spec)
     payloads = {
         view: build_topology_payload(
             build_view(graph, root, view),
@@ -93,6 +109,9 @@ def _commit_sample(
             texts,
             node_types,
             commit_id=commit_id,
+            normalizer=normalizer,
+            scope=scope,
+            spec=normalization_spec,
         )
         for view in CANONICAL_VIEWS
     }
@@ -115,6 +134,9 @@ def _commit_sample(
             "schema_version": COMPLETION_SCHEMA_VERSION,
             "sample_id": record.sample_id,
             "commit_id": commit_id,
+            "normalization_mode": normalization_spec.mode,
+            "normalization_key": normalization_spec.normalization_key,
+            "normalization_fingerprint": normalization_spec.fingerprint,
             "views": list(CANONICAL_VIEWS),
             "text_registry_size_at_commit": len(texts),
             "node_type_registry_size_at_commit": len(node_types),
@@ -160,6 +182,7 @@ def _sample_is_complete(
     index: list[dict[str, object]],
     texts: NodeTextRegistry,
     node_types: NodeTypeRegistry,
+    normalization_spec: NormalizationSpec,
 ) -> bool:
     marker_path = _marker_path(output_dir, sample_id)
     if not marker_path.is_file():
@@ -173,6 +196,8 @@ def _sample_is_complete(
     if marker.get("schema_version") != COMPLETION_SCHEMA_VERSION:
         return False
     if marker.get("sample_id") != sample_id:
+        return False
+    if marker.get("normalization_fingerprint") != normalization_spec.fingerprint:
         return False
     if marker.get("views") != list(CANONICAL_VIEWS):
         return False
@@ -228,6 +253,8 @@ def _sample_is_complete(
         if payload.get("sample_id") != sample_id or payload.get("view") != view:
             return False
         if payload.get("cache_schema_version") != TOPOLOGY_CACHE_SCHEMA_VERSION:
+            return False
+        if payload.get("normalization_fingerprint") != normalization_spec.fingerprint:
             return False
         text_ids = payload.get("text_id")
         node_type_ids = payload.get("node_type_id")

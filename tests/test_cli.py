@@ -59,8 +59,7 @@ def test_cli_audit_and_build_topologies_on_small_dataset(tmp_path: Path) -> None
     assert source_map.is_file()
     with source_map.open("r", encoding="utf-8", newline="") as handle:
         assert [row["sample_id"] for row in csv.DictReader(handle)] == ["sample_1"]
-    assert (tmp_path / "artifacts" / "topologies" / "ast" / "sample_1.pt").is_file()
-    assert (tmp_path / "artifacts" / "topologies" / "core-cpg" / "sample_1.pt").is_file()
-    assert (
-        tmp_path / "artifacts" / "topologies" / "completed" / "sample_1.json"
-    ).is_file()
+    topology_root = tmp_path / "artifacts" / "normalization" / "raw-v1" / "topologies"
+    assert (topology_root / "ast" / "sample_1.pt").is_file()
+    assert (topology_root / "core-cpg" / "sample_1.pt").is_file()
+    assert (topology_root / "completed" / "sample_1.json").is_file()

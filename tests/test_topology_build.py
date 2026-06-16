@@ -9,7 +9,8 @@ import torch
 import cpg_vuln.data.build as build_module
 from cpg_vuln.data.audit import ManifestRecord
 from cpg_vuln.data.build import CANONICAL_VIEWS, build_topologies
-from cpg_vuln.data.store import NodeTypeRegistry, load_topology
+from cpg_vuln.data.store import TOPOLOGY_CACHE_SCHEMA_VERSION, NodeTypeRegistry, load_topology
+from cpg_vuln.features.normalization import NormalizationSpec
 from cpg_vuln.features.text import NodeTextRegistry
 
 from .helpers import write_graphml
@@ -58,7 +59,7 @@ def _assert_valid_transaction(output_dir: Path, sample_id: str = "sample_1") -> 
     for item in index:
         payload = load_topology(Path(item["path"]))
         assert item["commit_id"] == marker["commit_id"] == payload["commit_id"]
-        assert payload["cache_schema_version"] == 1
+        assert payload["cache_schema_version"] == TOPOLOGY_CACHE_SCHEMA_VERSION
 
 
 def test_build_topologies_commits_canonical_views_with_marker_last(tmp_path: Path) -> None:
@@ -68,6 +69,36 @@ def test_build_topologies_commits_canonical_views_with_marker_last(tmp_path: Pat
 
     assert "slice-cpg" in CANONICAL_VIEWS
     _assert_valid_transaction(output_dir)
+
+
+def test_build_topologies_records_normalization_fingerprint(tmp_path: Path) -> None:
+    output_dir = tmp_path / "topologies"
+    spec = NormalizationSpec(mode="semantic-anon")
+
+    build_topologies([_record(tmp_path)], output_dir, normalization_spec=spec)
+
+    marker = _marker(output_dir)
+    assert marker["normalization_key"] == "semantic-anon-v1"
+    assert marker["normalization_fingerprint"] == spec.fingerprint
+    payload = load_topology(output_dir / "ast" / "sample_1.pt")
+    assert payload["normalization_fingerprint"] == spec.fingerprint
+
+
+def test_sample_is_incomplete_when_topology_schema_is_stale(tmp_path: Path) -> None:
+    output_dir = tmp_path / "topologies"
+    record = _record(tmp_path)
+    build_topologies([record], output_dir)
+    path = output_dir / "ast" / "sample_1.pt"
+    payload = load_topology(path)
+    old_commit_id = payload["commit_id"]
+    payload["cache_schema_version"] = 1
+    torch.save(payload, path)
+
+    build_topologies([record], output_dir)
+
+    rebuilt = load_topology(path)
+    assert rebuilt["cache_schema_version"] == TOPOLOGY_CACHE_SCHEMA_VERSION
+    assert rebuilt["commit_id"] != old_commit_id
 
 
 def test_topology_skip_requires_completed_marker(tmp_path: Path) -> None:

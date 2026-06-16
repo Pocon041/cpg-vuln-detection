@@ -12,6 +12,11 @@ class FeatureCacheMetadata:
     rows: int
     dim: int
     dtype: str
+    normalization_key: str = "raw-v1"
+    normalization_fingerprint: str = ""
+    text_registry_sha256: str = ""
+    producer: str = ""
+    producer_fingerprint: str = ""
 
 
 class MemmapFeatureCache:
@@ -35,14 +40,18 @@ class MemmapFeatureCache:
         rows: int,
         dim: int,
         dtype: str = "float16",
+        metadata: FeatureCacheMetadata | None = None,
     ) -> "MemmapFeatureCache":
         root.mkdir(parents=True, exist_ok=True)
-        metadata = FeatureCacheMetadata(rows=rows, dim=dim, dtype=np.dtype(dtype).name)
+        dtype_name = np.dtype(dtype).name
+        metadata = metadata or FeatureCacheMetadata(rows=rows, dim=dim, dtype=dtype_name)
+        if metadata.rows != rows or metadata.dim != dim or metadata.dtype != dtype_name:
+            raise ValueError("provided cache metadata does not match requested shape")
         metadata_path = root / "metadata.json"
         if metadata_path.exists():
             existing = cls.open(root)
             if existing.metadata != metadata:
-                raise ValueError(f"cache shape mismatch at {root}")
+                raise ValueError(f"cache metadata mismatch at {root}")
             return existing
         metadata_path.write_text(
             json.dumps(asdict(metadata), indent=2) + "\n",
@@ -86,4 +95,3 @@ class MemmapFeatureCache:
     @property
     def is_complete(self) -> bool:
         return bool(np.all(self.completed))
-
