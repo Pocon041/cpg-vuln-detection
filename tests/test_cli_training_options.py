@@ -203,8 +203,11 @@ def test_cli_passes_train_ramp_options(tmp_path: Path, monkeypatch) -> None:
         "run_name": None,
         "lambda_replay": None,
         "lambda_rank": None,
+        "lambda_auxiliary": None,
         "margin": None,
         "max_pairs_per_positive": None,
+        "rank_warmup_epochs": None,
+        "rank_ramp_epochs": None,
         "checkpoint_metric": None,
         "threshold_strategy": None,
         "learning_rate": None,
@@ -256,10 +259,16 @@ def test_cli_passes_fast_proof_ramp_options(tmp_path: Path, monkeypatch) -> None
             "0.25",
             "--lambda-rank",
             "0.20",
+            "--lambda-auxiliary",
+            "0.05",
             "--margin",
             "0.35",
             "--max-pairs-per-positive",
             "2",
+            "--rank-warmup-epochs",
+            "8",
+            "--rank-ramp-epochs",
+            "6",
             "--checkpoint-metric",
             "pr_auc",
             "--threshold-strategy",
@@ -288,8 +297,11 @@ def test_cli_passes_fast_proof_ramp_options(tmp_path: Path, monkeypatch) -> None
     assert received["run_name"] == "ramp-E4-v2A-fast-strict"
     assert received["lambda_replay"] == 0.25
     assert received["lambda_rank"] == 0.20
+    assert received["lambda_auxiliary"] == 0.05
     assert received["margin"] == 0.35
     assert received["max_pairs_per_positive"] == 2
+    assert received["rank_warmup_epochs"] == 8
+    assert received["rank_ramp_epochs"] == 6
     assert received["checkpoint_metric"] == "pr_auc"
     assert received["threshold_strategy"] == "fixed_0_5"
     assert received["learning_rate"] == 0.0003

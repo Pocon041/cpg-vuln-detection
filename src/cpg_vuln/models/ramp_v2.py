@@ -270,7 +270,7 @@ class RampV3SliceMILCPG(RampV2CPG):
         use_semantics: bool = True,
         slice_top_k: int = 3,
         slice_temperature: float = 1.0,
-        fusion_logit_init: tuple[float, float, float, float] = (1.0, 0.0, 0.0, -1.0),
+        fusion_logit_init: tuple[float, float, float, float] = (4.0, 0.0, 0.0, -2.0),
     ) -> None:
         super().__init__(
             input_dim=input_dim,

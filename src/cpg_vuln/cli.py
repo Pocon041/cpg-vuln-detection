@@ -176,8 +176,11 @@ def main(argv: list[str] | None = None) -> None:
             run_name=args.run_name,
             lambda_replay=args.lambda_replay,
             lambda_rank=args.lambda_rank,
+            lambda_auxiliary=args.lambda_auxiliary,
             margin=args.margin,
             max_pairs_per_positive=args.max_pairs_per_positive,
+            rank_warmup_epochs=args.rank_warmup_epochs,
+            rank_ramp_epochs=args.rank_ramp_epochs,
             checkpoint_metric=args.checkpoint_metric,
             threshold_strategy=args.threshold_strategy,
             learning_rate=args.learning_rate,
@@ -295,8 +298,11 @@ def _parser() -> argparse.ArgumentParser:
     ramp.add_argument("--run-name")
     ramp.add_argument("--lambda-replay", type=float)
     ramp.add_argument("--lambda-rank", type=float)
+    ramp.add_argument("--lambda-auxiliary", type=float)
     ramp.add_argument("--margin", type=float)
     ramp.add_argument("--max-pairs-per-positive", type=int)
+    ramp.add_argument("--rank-warmup-epochs", type=int)
+    ramp.add_argument("--rank-ramp-epochs", type=int)
     ramp.add_argument(
         "--checkpoint-metric",
         choices=("loss", "f1", "roc_auc", "pr_auc", "mcc", "balanced_accuracy"),

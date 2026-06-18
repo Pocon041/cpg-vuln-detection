@@ -566,6 +566,33 @@ def test_v3_ramp_overrides_are_model_scoped() -> None:
     assert v3_config.rank_ramp_epochs == 4
 
 
+def test_explicit_ramp_training_overrides_win_after_model_defaults() -> None:
+    import cpg_vuln.training.runner as runner
+
+    config = {
+        "ramp_v3": {
+            "lambda_auxiliary": 0.2,
+            "rank_warmup_epochs": 5,
+            "rank_ramp_epochs": 4,
+        }
+    }
+    model_config = runner._apply_model_ramp_overrides(
+        "ramp-v3-slice-mil",
+        runner.RampConfig(lambda_rank=0.25),
+        config,
+    )
+    explicit = runner._apply_explicit_ramp_training_overrides(
+        model_config,
+        lambda_auxiliary=0.05,
+        rank_warmup_epochs=8,
+        rank_ramp_epochs=6,
+    )
+
+    assert explicit.lambda_auxiliary == pytest.approx(0.05)
+    assert explicit.rank_warmup_epochs == 8
+    assert explicit.rank_ramp_epochs == 6
+
+
 def test_ramp_settings_encode_e1_to_e4_negative_strategies() -> None:
     from cpg_vuln.mining.hard_negative_bank import MiningStrategy
     from cpg_vuln.training.runner import ramp_settings_for_experiment

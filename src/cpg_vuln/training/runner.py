@@ -314,8 +314,11 @@ def train_ramp(
     run_name: str | None = None,
     lambda_replay: float | None = None,
     lambda_rank: float | None = None,
+    lambda_auxiliary: float | None = None,
     margin: float | None = None,
     max_pairs_per_positive: int | None = None,
+    rank_warmup_epochs: int | None = None,
+    rank_ramp_epochs: int | None = None,
     checkpoint_metric: str | None = None,
     threshold_strategy: str | None = None,
     learning_rate: float | None = None,
@@ -386,6 +389,12 @@ def train_ramp(
         max_pairs_per_positive=max_pairs_per_positive,
     )
     ramp_config = _apply_model_ramp_overrides(model_name, ramp_config, config)
+    ramp_config = _apply_explicit_ramp_training_overrides(
+        ramp_config,
+        lambda_auxiliary=lambda_auxiliary,
+        rank_warmup_epochs=rank_warmup_epochs,
+        rank_ramp_epochs=rank_ramp_epochs,
+    )
     from cpg_vuln.training.engine import TrainConfig, _loader, _predict, run_training
     from cpg_vuln.training.ramp import run_ramp_training
 
@@ -811,6 +820,27 @@ def _apply_model_ramp_overrides(
     )
 
 
+def _apply_explicit_ramp_training_overrides(
+    ramp_config: RampConfig,
+    *,
+    lambda_auxiliary: float | None = None,
+    rank_warmup_epochs: int | None = None,
+    rank_ramp_epochs: int | None = None,
+) -> RampConfig:
+    return replace(
+        ramp_config,
+        lambda_auxiliary=ramp_config.lambda_auxiliary
+        if lambda_auxiliary is None
+        else float(lambda_auxiliary),
+        rank_warmup_epochs=ramp_config.rank_warmup_epochs
+        if rank_warmup_epochs is None
+        else int(rank_warmup_epochs),
+        rank_ramp_epochs=ramp_config.rank_ramp_epochs
+        if rank_ramp_epochs is None
+        else int(rank_ramp_epochs),
+    )
+
+
 def write_ramp_strategy_manifest(
     path: Path,
     *,
@@ -1020,7 +1050,7 @@ def _ramp_model(
                 float(value)
                 for value in ramp_v3_config.get(
                     "fusion_logit_init",
-                    (1.0, 0.0, 0.0, -1.0),
+                    (4.0, 0.0, 0.0, -2.0),
                 )
             )
             model_kwargs.update(

@@ -163,7 +163,8 @@ def test_ramp_v3_slice_branch_is_not_dominant_at_initialization() -> None:
     output = model(batch)
 
     assert output.diagnostics is not None
-    assert output.diagnostics["fusion_weight_fused"] > output.diagnostics["fusion_weight_slice"]
+    assert output.diagnostics["fusion_weight_fused"] > 0.8
+    assert output.diagnostics["fusion_weight_slice"] < 0.05
 
 
 def test_ramp_v3_slice_mil_falls_back_to_all_nodes_without_seed_mask() -> None:
