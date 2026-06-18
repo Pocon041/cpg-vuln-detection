@@ -22,6 +22,7 @@ from cpg_vuln.mining.hard_negative_bank import (
 )
 from cpg_vuln.mining.motif import extract_risk_motif
 from cpg_vuln.mining.retrieval_features import retrieval_vector_map
+from cpg_vuln.utils.fingerprint import sha256_json
 
 
 @dataclass(frozen=True)
@@ -365,6 +366,7 @@ def train_ramp(
         function_indices=function_indices,
     )
     sample_payload = load_topology(datasets["train"].topology_paths[0])
+    model_fingerprint = _ramp_model_fingerprint(model_name, view, config)
     _seed_model(config["training"]["seed"])
     model = _ramp_model(
         model_name=model_name,
@@ -414,7 +416,11 @@ def train_ramp(
     warmup_checkpoint = warmup_dir / "best.pt"
     fp_snapshot_path = warmup_artifact_dir / "train_fp_snapshot.json"
 
-    if not _ramp_warmup_matches_current_inputs(warmup_dir, layout):
+    if not _ramp_warmup_matches_current_inputs(
+        warmup_dir,
+        layout,
+        expected_model_fingerprint=model_fingerprint,
+    ):
         warmup_config = TrainConfig(
             **{
                 **asdict(train_config),
@@ -438,6 +444,7 @@ def train_ramp(
                 "split": split,
                 "view": view,
                 "model_name": model_name,
+                "model_fingerprint": model_fingerprint,
                 "bank_mode": "static",
                 "normalization_mode": layout.spec.mode,
                 "normalization_key": layout.spec.normalization_key,
@@ -561,6 +568,7 @@ def train_ramp(
             "split": split,
             "view": view,
             "model_name": model_name,
+            "model_fingerprint": model_fingerprint,
             "run_name": run_dir.name,
             "evaluate_test": evaluate_test,
             "feature_dim": node_cache.metadata.dim,
@@ -661,7 +669,12 @@ def _function_source_normalization(layout: ArtifactLayout) -> str:
     return str(value) if value else "raw"
 
 
-def _ramp_warmup_matches_current_inputs(warmup_dir: Path, layout: ArtifactLayout) -> bool:
+def _ramp_warmup_matches_current_inputs(
+    warmup_dir: Path,
+    layout: ArtifactLayout,
+    *,
+    expected_model_fingerprint: str | None = None,
+) -> bool:
     if not (warmup_dir / "best.pt").is_file():
         return False
     metrics_path = warmup_dir / "metrics.json"
@@ -670,10 +683,28 @@ def _ramp_warmup_matches_current_inputs(warmup_dir: Path, layout: ArtifactLayout
     metadata = _read_json(metrics_path).get("run_metadata", {})
     if not isinstance(metadata, dict):
         return False
-    return (
+    matches = (
         metadata.get("normalization_fingerprint") == layout.spec.fingerprint
         and metadata.get("function_source_normalization")
         == _function_source_normalization(layout)
+    )
+    if expected_model_fingerprint is not None:
+        matches = (
+            matches
+            and metadata.get("model_fingerprint") == expected_model_fingerprint
+        )
+    return matches
+
+
+def _ramp_model_fingerprint(model_name: str, view: str, config: dict) -> str:
+    return sha256_json(
+        {
+            "model_name": model_name,
+            "view": view,
+            "model": config.get("model", {}),
+            "ramp_v2": config.get("ramp_v2", {}),
+            "ramp_v3": config.get("ramp_v3", {}),
+        }
     )
 
 
@@ -985,10 +1016,18 @@ def _ramp_model(
                 }
             )
         if model_name == "ramp-v3-slice-mil":
+            fusion_logit_init = tuple(
+                float(value)
+                for value in ramp_v3_config.get(
+                    "fusion_logit_init",
+                    (1.0, 0.0, 0.0, -1.0),
+                )
+            )
             model_kwargs.update(
                 {
                     "slice_top_k": int(ramp_v3_config.get("slice_top_k", 3)),
                     "slice_temperature": float(ramp_v3_config.get("slice_temperature", 1.0)),
+                    "fusion_logit_init": fusion_logit_init,
                 }
             )
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from cpg_vuln.data.graphml import GraphMLParser, choose_primary_method
 from cpg_vuln.data.layout import ArtifactLayout
@@ -166,6 +167,57 @@ def test_ramp_warmup_is_stale_when_function_source_normalization_changes(tmp_pat
     assert runner._ramp_warmup_matches_current_inputs(warmup_dir, layout) is False
 
 
+def test_ramp_warmup_is_stale_when_model_fingerprint_changes(tmp_path: Path) -> None:
+    import cpg_vuln.training.runner as runner
+
+    layout = ArtifactLayout(
+        artifacts_root=tmp_path / "artifacts",
+        outputs_root=tmp_path / "outputs",
+        spec=NormalizationSpec(mode="raw"),
+    )
+    warmup_dir = tmp_path / "outputs" / "runs" / "raw-v1" / "warmup"
+    warmup_dir.mkdir(parents=True)
+    (warmup_dir / "best.pt").write_bytes(b"checkpoint")
+    (warmup_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "run_metadata": {
+                    "normalization_fingerprint": layout.spec.fingerprint,
+                    "function_source_normalization": "raw",
+                    "model_fingerprint": "old",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        runner._ramp_warmup_matches_current_inputs(
+            warmup_dir,
+            layout,
+            expected_model_fingerprint="new",
+        )
+        is False
+    )
+
+
+def test_ramp_model_fingerprint_changes_with_v3_slice_settings() -> None:
+    import cpg_vuln.training.runner as runner
+
+    base = {
+        "model": {"hidden_dim": 8},
+        "ramp_v3": {"slice_top_k": 3},
+    }
+    changed = {
+        "model": {"hidden_dim": 8},
+        "ramp_v3": {"slice_top_k": 4},
+    }
+
+    assert runner._ramp_model_fingerprint("ramp-v3-slice-mil", "core-cpg", base) != (
+        runner._ramp_model_fingerprint("ramp-v3-slice-mil", "core-cpg", changed)
+    )
+
+
 def test_ramp_model_constructs_gated_rgcn() -> None:
     import cpg_vuln.training.runner as runner
     from cpg_vuln.models.ramp_v2 import RampV2GatedRGCNCPG
@@ -213,6 +265,7 @@ def test_ramp_model_constructs_ramp_v3_slice_mil() -> None:
             "ramp_v3": {
                 "slice_top_k": 4,
                 "slice_temperature": 0.7,
+                "fusion_logit_init": [2.0, 0.0, -1.0, -2.0],
             },
         },
     )
@@ -220,6 +273,10 @@ def test_ramp_model_constructs_ramp_v3_slice_mil() -> None:
     assert isinstance(model, RampV3SliceMILCPG)
     assert model.slice_top_k == 4
     assert model.slice_temperature == pytest.approx(0.7)
+    assert torch.allclose(
+        model.logit_weights.detach(),
+        torch.tensor([2.0, 0.0, -1.0, -2.0]),
+    )
 
 
 def test_baseline_runner_reports_matrix_progress(tmp_path: Path, monkeypatch) -> None:
