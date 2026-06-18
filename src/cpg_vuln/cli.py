@@ -283,7 +283,13 @@ def _parser() -> argparse.ArgumentParser:
     ramp.add_argument("--view", default="core-cpg")
     ramp.add_argument(
         "--model",
-        choices=("selective-fusion", "ramp-v2-rgcn", "ramp-v2-dual"),
+        choices=(
+            "selective-fusion",
+            "ramp-v2-rgcn",
+            "ramp-v2-dual",
+            "ramp-v2-gated-rgcn",
+            "ramp-v3-slice-mil",
+        ),
         default="selective-fusion",
     )
     ramp.add_argument("--run-name")

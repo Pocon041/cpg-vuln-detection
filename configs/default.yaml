@@ -73,3 +73,10 @@ ramp:
   max_pair_nodes: 8000
   max_pair_edges: 60000
   replay_steps_per_epoch: 200
+
+ramp_v3:
+  slice_top_k: 3
+  slice_temperature: 1.0
+  lambda_auxiliary: 0.2
+  rank_warmup_epochs: 5
+  rank_ramp_epochs: 5

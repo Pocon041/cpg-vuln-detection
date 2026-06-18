@@ -36,9 +36,12 @@ from cpg_vuln.training.thresholds import (
 class RampConfig:
     lambda_replay: float = 0.5
     lambda_rank: float = 0.25
+    lambda_auxiliary: float = 0.0
     margin: float = 0.5
     pair_batch_size: int = 2
     warmup_epochs: int = 3
+    rank_warmup_epochs: int = 0
+    rank_ramp_epochs: int = 0
     max_pairs_per_positive: int = 3
     minimum_pair_score: float = 0.2
     max_pair_nodes: int = 8000
@@ -116,9 +119,16 @@ def run_ramp_training(
         replay_pair_count = 0
         ranking_loss_sum = 0.0
         ranking_pair_count = 0
+        auxiliary_loss_sum = 0.0
+        auxiliary_item_count = 0
         objective_step_sum = 0.0
+        pre_rank_objective_step_sum = 0.0
+        weighted_auxiliary_step_sum = 0.0
+        weighted_replay_step_sum = 0.0
+        weighted_ranking_step_sum = 0.0
         optimizer_step_count = 0
         pair_batches_used = 0
+        effective_lambda_rank = _effective_rank_lambda(ramp_config, epoch=epoch)
         model.train()
         for batch in train_loader:
             batch = batch.to(device)
@@ -126,6 +136,8 @@ def run_ramp_training(
             output = model(batch)
             positive_logits = output.logits.new_empty((0, 2))
             negative_logits = output.logits.new_empty((0, 2))
+            positive_evidence_logits = None
+            negative_evidence_logits = None
             try:
                 pair_batch_indices = next(pair_batches)
             except StopIteration:
@@ -134,16 +146,24 @@ def run_ramp_training(
                 positives, negatives = pair_index.graphs_for(train_dataset, pair_batch_indices)
                 positive_batch = Batch.from_data_list(positives).to(device)
                 negative_batch = Batch.from_data_list(negatives).to(device)
-                positive_logits = model(positive_batch).logits
-                negative_logits = model(negative_batch).logits
+                positive_output = model(positive_batch)
+                negative_output = model(negative_batch)
+                positive_logits = positive_output.logits
+                negative_logits = negative_output.logits
+                positive_evidence_logits = _evidence_logits(positive_output)
+                negative_evidence_logits = _evidence_logits(negative_output)
             loss, parts = compute_ramp_loss(
                 batch_logits=output.logits,
                 batch_targets=batch.y,
                 positive_logits=positive_logits,
                 matched_negative_logits=negative_logits,
+                auxiliary_logits=getattr(output, "auxiliary_logits", None),
+                positive_evidence_logits=positive_evidence_logits,
+                matched_negative_evidence_logits=negative_evidence_logits,
                 margin=ramp_config.margin,
                 lambda_replay=ramp_config.lambda_replay,
-                lambda_rank=ramp_config.lambda_rank,
+                lambda_rank=effective_lambda_rank,
+                lambda_auxiliary=ramp_config.lambda_auxiliary,
                 class_weight=config.class_weight,
             )
             loss.backward()
@@ -155,6 +175,8 @@ def run_ramp_training(
             total_samples += main_items
             main_loss_sum += float(parts["main_loss"]) * main_items
             main_item_count += main_items
+            auxiliary_loss_sum += float(parts.get("auxiliary_loss", 0.0)) * main_items
+            auxiliary_item_count += main_items
             if pair_items:
                 replay_loss_sum += float(parts["replay_loss"]) * pair_items
                 replay_pair_count += pair_items
@@ -162,6 +184,10 @@ def run_ramp_training(
                 ranking_pair_count += pair_items
                 pair_batches_used += 1
             objective_step_sum += float(parts["loss"])
+            pre_rank_objective_step_sum += float(parts.get("pre_rank_loss", parts["loss"]))
+            weighted_auxiliary_step_sum += float(parts.get("weighted_auxiliary_loss", 0.0))
+            weighted_replay_step_sum += float(parts.get("weighted_replay_loss", 0.0))
+            weighted_ranking_step_sum += float(parts.get("weighted_ranking_loss", 0.0))
             optimizer_step_count += 1
         train_loss = total_loss / max(total_samples, 1)
         validation = _predict(model, val_loader, device)
@@ -196,9 +222,19 @@ def run_ramp_training(
                 "epoch": epoch + 1,
                 "loss": train_loss,
                 "main_loss": main_loss_sum / max(main_item_count, 1),
+                "auxiliary_loss": auxiliary_loss_sum / max(auxiliary_item_count, 1),
                 "replay_loss": replay_loss_sum / max(replay_pair_count, 1),
                 "ranking_loss": ranking_loss_sum / max(ranking_pair_count, 1),
                 "objective_per_step": objective_step_sum / max(optimizer_step_count, 1),
+                "pre_rank_objective_per_step": pre_rank_objective_step_sum
+                / max(optimizer_step_count, 1),
+                "weighted_auxiliary_loss_per_step": weighted_auxiliary_step_sum
+                / max(optimizer_step_count, 1),
+                "weighted_replay_loss_per_step": weighted_replay_step_sum
+                / max(optimizer_step_count, 1),
+                "weighted_ranking_loss_per_step": weighted_ranking_step_sum
+                / max(optimizer_step_count, 1),
+                "effective_lambda_rank": effective_lambda_rank,
                 "main_items": main_item_count,
                 "replay_pairs": replay_pair_count,
                 "ranking_pairs": ranking_pair_count,
@@ -303,10 +339,14 @@ def run_ramp_training(
         "validation_val_f1": validation_threshold_metrics["val_f1"],
         "validation_val_mcc": validation_threshold_metrics["val_mcc"],
         "validation": validation_metrics,
+        "validation_diagnostics": validation.get("diagnostics", {}),
         "test_fixed_0_5": test_fixed,
         "test_val_f1": test_val_f1,
         "test_val_mcc": test_val_mcc,
         "test": test_metrics,
+        "test_diagnostics": None
+        if test_prediction is None
+        else test_prediction.get("diagnostics", {}),
     }
     _write_json(output_dir / "metrics.json", result)
     _write_json(output_dir / "history.json", history)
@@ -319,3 +359,19 @@ def run_ramp_training(
     if test_explanations:
         _write_json(output_dir / "node_attention.json", test_explanations)
     return result
+
+
+def _effective_rank_lambda(ramp_config: RampConfig, *, epoch: int) -> float:
+    if ramp_config.lambda_rank <= 0:
+        return 0.0
+    if epoch < ramp_config.rank_warmup_epochs:
+        return 0.0
+    if ramp_config.rank_ramp_epochs <= 0:
+        return float(ramp_config.lambda_rank)
+    progress = (epoch - ramp_config.rank_warmup_epochs + 1) / ramp_config.rank_ramp_epochs
+    return float(ramp_config.lambda_rank) * min(1.0, max(0.0, progress))
+
+
+def _evidence_logits(output) -> torch.Tensor:
+    evidence_logits = getattr(output, "evidence_logits", None)
+    return output.logits if evidence_logits is None else evidence_logits

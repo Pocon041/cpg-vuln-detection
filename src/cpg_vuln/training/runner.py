@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import torch
@@ -28,9 +28,12 @@ from cpg_vuln.mining.retrieval_features import retrieval_vector_map
 class RampConfig:
     lambda_replay: float = 0.5
     lambda_rank: float = 0.25
+    lambda_auxiliary: float = 0.0
     margin: float = 0.5
     pair_batch_size: int = 2
     warmup_epochs: int = 3
+    rank_warmup_epochs: int = 0
+    rank_ramp_epochs: int = 0
     max_pairs_per_positive: int = 3
     minimum_pair_score: float = 0.2
     max_pair_nodes: int = 8000
@@ -380,6 +383,7 @@ def train_ramp(
         margin=margin,
         max_pairs_per_positive=max_pairs_per_positive,
     )
+    ramp_config = _apply_model_ramp_overrides(model_name, ramp_config, config)
     from cpg_vuln.training.engine import TrainConfig, _loader, _predict, run_training
     from cpg_vuln.training.ramp import run_ramp_training
 
@@ -721,9 +725,12 @@ def ramp_settings_for_experiment(
     ramp_config = RampConfig(
         lambda_replay=0.0 if experiment == "E0" else effective_lambda_replay,
         lambda_rank=rank_lambda,
+        lambda_auxiliary=float(ramp.get("lambda_auxiliary", 0.0)),
         margin=effective_margin,
         pair_batch_size=int(ramp.get("pair_batch_size", 2)),
         warmup_epochs=int(ramp.get("warmup_epochs", 3)),
+        rank_warmup_epochs=int(ramp.get("rank_warmup_epochs", 0)),
+        rank_ramp_epochs=int(ramp.get("rank_ramp_epochs", 0)),
         max_pairs_per_positive=effective_max_pairs,
         minimum_pair_score=float(ramp.get("minimum_pair_score", 0.2)),
         max_pair_nodes=int(ramp.get("max_pair_nodes", 8000)),
@@ -749,6 +756,28 @@ def ramp_settings_for_experiment(
     if experiment in {"E3", "E4"}:
         return HardNegativeConfig(strategy=MiningStrategy.MOTIF_MATCHED, **base_mining), ramp_config
     raise ValueError(f"unsupported RAMP experiment: {experiment}")
+
+
+def _apply_model_ramp_overrides(
+    model_name: str,
+    ramp_config: RampConfig,
+    config: dict,
+) -> RampConfig:
+    if model_name != "ramp-v3-slice-mil":
+        return ramp_config
+    ramp_v3_config = config.get("ramp_v3", {})
+    return replace(
+        ramp_config,
+        lambda_auxiliary=float(
+            ramp_v3_config.get("lambda_auxiliary", ramp_config.lambda_auxiliary)
+        ),
+        rank_warmup_epochs=int(
+            ramp_v3_config.get("rank_warmup_epochs", ramp_config.rank_warmup_epochs)
+        ),
+        rank_ramp_epochs=int(
+            ramp_v3_config.get("rank_ramp_epochs", ramp_config.rank_ramp_epochs)
+        ),
+    )
 
 
 def write_ramp_strategy_manifest(
@@ -896,9 +925,10 @@ def _ramp_model(
     num_node_types: int,
     num_relations: int,
     config: dict,
-) -> torch.nn.Module:
+    ) -> torch.nn.Module:
     model_config = config.get("model", {})
     ramp_v2_config = config.get("ramp_v2", {})
+    ramp_v3_config = config.get("ramp_v3", {})
     if model_name == "selective-fusion":
         from cpg_vuln.models.selective_fusion import SelectiveFusionCPG
 
@@ -910,22 +940,60 @@ def _ramp_model(
             use_semantics=True,
             **_model_args(config),
         )
-    if model_name in {"ramp-v2-rgcn", "ramp-v2-dual"}:
-        from cpg_vuln.models.ramp_v2 import RampV2CPG, RampV2DualHeadCPG
+    if model_name in {
+        "ramp-v2-rgcn",
+        "ramp-v2-dual",
+        "ramp-v2-gated-rgcn",
+        "ramp-v3-slice-mil",
+    }:
+        from cpg_vuln.models.ramp_v2 import (
+            RampV2CPG,
+            RampV2DualHeadCPG,
+            RampV2GatedRGCNCPG,
+            RampV3SliceMILCPG,
+        )
 
-        model_class = RampV2DualHeadCPG if model_name == "ramp-v2-dual" else RampV2CPG
+        model_classes = {
+            "ramp-v2-rgcn": RampV2CPG,
+            "ramp-v2-dual": RampV2DualHeadCPG,
+            "ramp-v2-gated-rgcn": RampV2GatedRGCNCPG,
+            "ramp-v3-slice-mil": RampV3SliceMILCPG,
+        }
+        dropout_default = (
+            0.25
+            if model_name in {"ramp-v2-gated-rgcn", "ramp-v3-slice-mil"}
+            else 0.2
+        )
+        model_kwargs = {
+            "input_dim": input_dim,
+            "function_dim": function_dim,
+            "num_node_types": num_node_types,
+            "num_relations": num_relations,
+            "hidden_dim": int(ramp_v2_config.get("hidden_dim", 256)),
+            "node_type_dim": int(model_config.get("node_type_dim", 32)),
+            "layers": int(ramp_v2_config.get("layers", 3)),
+            "dropout": float(ramp_v2_config.get("dropout", dropout_default)),
+            "encoder": "rgcn",
+            "use_semantics": True,
+        }
+        if model_name == "ramp-v2-gated-rgcn":
+            gated_config = ramp_v2_config.get("gated_rgcn", {})
+            model_kwargs.update(
+                {
+                    "gate_bias_init": float(gated_config.get("gate_bias_init", -1.0)),
+                    "ffn_multiplier": int(gated_config.get("ffn_multiplier", 2)),
+                }
+            )
+        if model_name == "ramp-v3-slice-mil":
+            model_kwargs.update(
+                {
+                    "slice_top_k": int(ramp_v3_config.get("slice_top_k", 3)),
+                    "slice_temperature": float(ramp_v3_config.get("slice_temperature", 1.0)),
+                }
+            )
 
-        return model_class(
-            input_dim=input_dim,
-            function_dim=function_dim,
-            num_node_types=num_node_types,
-            num_relations=num_relations,
-            hidden_dim=int(ramp_v2_config.get("hidden_dim", 256)),
-            node_type_dim=int(model_config.get("node_type_dim", 32)),
-            layers=int(ramp_v2_config.get("layers", 3)),
-            dropout=float(ramp_v2_config.get("dropout", 0.2)),
-            encoder="rgcn",
-            use_semantics=True,
+        return model_classes[model_name](
+            **model_kwargs,
         )
     raise ValueError(f"unsupported RAMP model: {model_name}")
 

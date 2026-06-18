@@ -334,6 +334,70 @@ def test_cli_accepts_dual_head_ramp_model(tmp_path: Path, monkeypatch) -> None:
     assert received["model_name"] == "ramp-v2-dual"
 
 
+def test_cli_accepts_gated_rgcn_ramp_model(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "paths": {
+                    "artifacts_dir": str(tmp_path / "artifacts"),
+                    "outputs_dir": str(tmp_path / "outputs"),
+                }
+            }
+        )
+    )
+    received: dict[str, object] = {}
+
+    def fake_train_ramp(config, **kwargs):
+        received.update(kwargs)
+
+    monkeypatch.setattr(cli, "train_ramp", fake_train_ramp)
+
+    cli.main(
+        [
+            "--config",
+            str(config),
+            "train-ramp",
+            "--model",
+            "ramp-v2-gated-rgcn",
+        ]
+    )
+
+    assert received["model_name"] == "ramp-v2-gated-rgcn"
+
+
+def test_cli_accepts_ramp_v3_slice_mil_model(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "paths": {
+                    "artifacts_dir": str(tmp_path / "artifacts"),
+                    "outputs_dir": str(tmp_path / "outputs"),
+                }
+            }
+        )
+    )
+    received: dict[str, object] = {}
+
+    def fake_train_ramp(config, **kwargs):
+        received.update(kwargs)
+
+    monkeypatch.setattr(cli, "train_ramp", fake_train_ramp)
+
+    cli.main(
+        [
+            "--config",
+            str(config),
+            "train-ramp",
+            "--model",
+            "ramp-v3-slice-mil",
+        ]
+    )
+
+    assert received["model_name"] == "ramp-v3-slice-mil"
+
+
 def test_cli_passes_train_devign_options(tmp_path: Path, monkeypatch) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

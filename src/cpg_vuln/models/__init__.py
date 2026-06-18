@@ -2,7 +2,12 @@
 
 from cpg_vuln.models.devign import DevignCPG
 from cpg_vuln.models.gcn import GCNClassifier
-from cpg_vuln.models.ramp_v2 import RampV2CPG, RampV2DualHeadCPG
+from cpg_vuln.models.ramp_v2 import (
+    RampV2CPG,
+    RampV2DualHeadCPG,
+    RampV2GatedRGCNCPG,
+    RampV3SliceMILCPG,
+)
 from cpg_vuln.models.selective_fusion import SelectiveFusionCPG
 
 __all__ = [
@@ -10,5 +15,7 @@ __all__ = [
     "GCNClassifier",
     "RampV2CPG",
     "RampV2DualHeadCPG",
+    "RampV2GatedRGCNCPG",
+    "RampV3SliceMILCPG",
     "SelectiveFusionCPG",
 ]

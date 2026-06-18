@@ -166,6 +166,62 @@ def test_ramp_warmup_is_stale_when_function_source_normalization_changes(tmp_pat
     assert runner._ramp_warmup_matches_current_inputs(warmup_dir, layout) is False
 
 
+def test_ramp_model_constructs_gated_rgcn() -> None:
+    import cpg_vuln.training.runner as runner
+    from cpg_vuln.models.ramp_v2 import RampV2GatedRGCNCPG
+
+    model = runner._ramp_model(
+        model_name="ramp-v2-gated-rgcn",
+        input_dim=8,
+        function_dim=8,
+        num_node_types=3,
+        num_relations=4,
+        config={
+            "model": {"node_type_dim": 4},
+            "ramp_v2": {
+                "hidden_dim": 16,
+                "layers": 2,
+                "dropout": 0.0,
+                "gated_rgcn": {
+                    "gate_bias_init": -0.5,
+                    "ffn_multiplier": 2,
+                },
+            },
+        },
+    )
+
+    assert isinstance(model, RampV2GatedRGCNCPG)
+
+
+def test_ramp_model_constructs_ramp_v3_slice_mil() -> None:
+    import cpg_vuln.training.runner as runner
+    from cpg_vuln.models.ramp_v2 import RampV3SliceMILCPG
+
+    model = runner._ramp_model(
+        model_name="ramp-v3-slice-mil",
+        input_dim=8,
+        function_dim=8,
+        num_node_types=3,
+        num_relations=4,
+        config={
+            "model": {"node_type_dim": 4},
+            "ramp_v2": {
+                "hidden_dim": 16,
+                "layers": 2,
+                "dropout": 0.0,
+            },
+            "ramp_v3": {
+                "slice_top_k": 4,
+                "slice_temperature": 0.7,
+            },
+        },
+    )
+
+    assert isinstance(model, RampV3SliceMILCPG)
+    assert model.slice_top_k == 4
+    assert model.slice_temperature == pytest.approx(0.7)
+
+
 def test_baseline_runner_reports_matrix_progress(tmp_path: Path, monkeypatch) -> None:
     import cpg_vuln.training.runner as runner
 
@@ -412,6 +468,45 @@ def test_ramp_config_overrides_do_not_mutate_base_config() -> None:
     assert ramp_config.margin == 0.25
     assert ramp_config.max_pairs_per_positive == 2
     assert config["ramp"]["lambda_replay"] == 0.5
+
+
+def test_ramp_settings_keep_immediate_ranking_by_default() -> None:
+    from cpg_vuln.training.runner import ramp_settings_for_experiment
+
+    _mining, ramp_config = ramp_settings_for_experiment("E4", {"ramp": {"lambda_rank": 0.25}})
+
+    assert ramp_config.lambda_auxiliary == 0.0
+    assert ramp_config.rank_warmup_epochs == 0
+    assert ramp_config.rank_ramp_epochs == 0
+
+
+def test_v3_ramp_overrides_are_model_scoped() -> None:
+    import cpg_vuln.training.runner as runner
+
+    base = runner.RampConfig(lambda_rank=0.25)
+    config = {
+        "ramp_v3": {
+            "lambda_auxiliary": 0.2,
+            "rank_warmup_epochs": 5,
+            "rank_ramp_epochs": 4,
+        }
+    }
+
+    v2_config = runner._apply_model_ramp_overrides(
+        "ramp-v2-rgcn",
+        base,
+        config,
+    )
+    v3_config = runner._apply_model_ramp_overrides(
+        "ramp-v3-slice-mil",
+        base,
+        config,
+    )
+
+    assert v2_config == base
+    assert v3_config.lambda_auxiliary == pytest.approx(0.2)
+    assert v3_config.rank_warmup_epochs == 5
+    assert v3_config.rank_ramp_epochs == 4
 
 
 def test_ramp_settings_encode_e1_to_e4_negative_strategies() -> None:

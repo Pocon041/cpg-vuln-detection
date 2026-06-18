@@ -253,10 +253,14 @@ def run_training(
         "validation_val_f1": validation_threshold_metrics["val_f1"],
         "validation_val_mcc": validation_threshold_metrics["val_mcc"],
         "validation": validation_metrics,
+        "validation_diagnostics": validation.get("diagnostics", {}),
         "test_fixed_0_5": test_fixed,
         "test_val_f1": test_val_f1,
         "test_val_mcc": test_val_mcc,
         "test": test_metrics,
+        "test_diagnostics": None
+        if test_prediction is None
+        else test_prediction.get("diagnostics", {}),
     }
     _write_json(output_dir / "metrics.json", result)
     _write_json(output_dir / "history.json", history)
@@ -357,6 +361,7 @@ def _predict(model, loader, device) -> dict[str, object]:
     probabilities: list[float] = []
     sample_ids: list[str] = []
     explanations: dict[str, list[dict[str, float | int]]] = {}
+    diagnostics: dict[str, list[torch.Tensor]] = {}
     for batch in loader:
         batch = batch.to(device)
         output = model(batch)
@@ -374,12 +379,44 @@ def _predict(model, loader, device) -> dict[str, object]:
                     {"line": int(lines[node]), "score": float(attention[node])}
                     for node in range(start, end)
                 ]
+        if getattr(output, "diagnostics", None):
+            _collect_diagnostics(diagnostics, output.diagnostics)
     return {
         "labels": np.asarray(labels, dtype=np.int64),
         "probabilities": np.asarray(probabilities, dtype=np.float32),
         "sample_ids": sample_ids,
         "explanations": explanations,
+        "diagnostics": _aggregate_diagnostics(diagnostics),
     }
+
+
+def _collect_diagnostics(
+    accumulator: dict[str, list[torch.Tensor]],
+    diagnostics: dict[str, torch.Tensor],
+) -> None:
+    for key, value in diagnostics.items():
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach().float().cpu()
+        elif isinstance(value, (float, int)):
+            tensor = torch.tensor(float(value), dtype=torch.float32)
+        else:
+            continue
+        accumulator.setdefault(key, []).append(tensor)
+
+
+def _aggregate_diagnostics(
+    diagnostics: dict[str, list[torch.Tensor]],
+) -> dict[str, float | list[float]]:
+    aggregated: dict[str, float | list[float]] = {}
+    for key, values in diagnostics.items():
+        if not values:
+            continue
+        mean = torch.stack(values).mean(dim=0)
+        if mean.ndim == 0:
+            aggregated[key] = float(mean.item())
+        else:
+            aggregated[key] = [float(value) for value in mean.reshape(-1).tolist()]
+    return aggregated
 
 
 def _loader(dataset: Sequence, *, config: TrainConfig, shuffle: bool):

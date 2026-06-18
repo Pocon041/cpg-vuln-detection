@@ -54,6 +54,49 @@ def test_training_smoke_writes_metrics_predictions_and_checkpoint(tmp_path: Path
     assert result["run_metadata"]["feature_dim"] == 8
 
 
+def test_training_writes_model_diagnostics_to_metrics(tmp_path: Path) -> None:
+    class DiagnosticModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, batch: Data) -> SimpleNamespace:
+            labels = batch.y.view(-1).float()
+            logits = torch.stack((1 - labels, labels), dim=-1) * self.weight
+            return SimpleNamespace(
+                logits=logits,
+                node_attention=None,
+                diagnostics={
+                    "encoder_gate_mean": torch.tensor(0.25, device=batch.y.device),
+                    "encoder_gate_mean_by_layer": torch.tensor(
+                        [0.2, 0.3],
+                        device=batch.y.device,
+                    ),
+                },
+            )
+
+    graphs = _graphs()
+
+    result = run_training(
+        DiagnosticModel(),
+        train_dataset=graphs[:4],
+        val_dataset=graphs[4:6],
+        test_dataset=graphs[6:],
+        output_dir=tmp_path,
+        config=TrainConfig(epochs=1, patience=1, device="cpu", max_nodes=100, max_edges=100),
+    )
+
+    metrics = json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))
+    assert result["validation_diagnostics"]["encoder_gate_mean"] == pytest.approx(0.25)
+    assert result["test_diagnostics"]["encoder_gate_mean_by_layer"] == pytest.approx(
+        [0.2, 0.3]
+    )
+    assert metrics["validation_diagnostics"]["encoder_gate_mean"] == pytest.approx(0.25)
+    assert metrics["test_diagnostics"]["encoder_gate_mean_by_layer"] == pytest.approx(
+        [0.2, 0.3]
+    )
+
+
 def test_training_can_defer_strict_test_metrics(tmp_path: Path) -> None:
     graphs = _graphs()
     model = GCNClassifier(input_dim=8, num_node_types=3, hidden_dim=8)
@@ -271,6 +314,105 @@ def test_ramp_training_uses_pair_ranking_loss(tmp_path: Path) -> None:
     assert result["run_metadata"]["training_mode"] == "ramp"
     assert result["run_metadata"]["bank_mode"] == "static"
     assert result["run_metadata"]["initial_pair_count"] == 1
+
+
+def test_ramp_rank_lambda_warms_up_then_ramps() -> None:
+    from cpg_vuln.training.ramp import RampConfig, _effective_rank_lambda
+
+    config = RampConfig(
+        lambda_rank=0.2,
+        rank_warmup_epochs=2,
+        rank_ramp_epochs=2,
+    )
+
+    assert _effective_rank_lambda(config, epoch=0) == 0.0
+    assert _effective_rank_lambda(config, epoch=1) == 0.0
+    assert _effective_rank_lambda(config, epoch=2) == pytest.approx(0.1)
+    assert _effective_rank_lambda(config, epoch=3) == pytest.approx(0.2)
+    assert _effective_rank_lambda(config, epoch=4) == pytest.approx(0.2)
+
+
+def test_ramp_training_passes_auxiliary_and_evidence_logits_to_loss(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import cpg_vuln.training.ramp as ramp
+    from cpg_vuln.mining.hard_negative_bank import HardNegativePair
+
+    class EvidenceModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, batch: Data) -> SimpleNamespace:
+            labels = batch.y.view(-1).float()
+            logits = torch.stack((1 - labels, labels), dim=-1) * self.weight
+            evidence_logits = torch.stack((labels, 1 - labels), dim=-1) * self.weight
+            return SimpleNamespace(
+                logits=logits,
+                node_attention=None,
+                auxiliary_logits={"slice": evidence_logits},
+                evidence_logits=evidence_logits,
+            )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_compute_ramp_loss(**kwargs):
+        calls.append(kwargs)
+        return (
+            torch.tensor(1.0, requires_grad=True),
+            {
+                "loss": 1.0,
+                "main_loss": 0.4,
+                "auxiliary_loss": 0.3,
+                "weighted_auxiliary_loss": 0.06,
+                "replay_loss": 0.2,
+                "weighted_replay_loss": 0.1,
+                "ranking_loss": 0.1,
+                "weighted_ranking_loss": 0.025,
+                "pre_rank_loss": 0.56,
+            },
+        )
+
+    monkeypatch.setattr(ramp, "compute_ramp_loss", fake_compute_ramp_loss)
+
+    graphs = _graphs()
+    pairs = [HardNegativePair("sample-1", "sample-0", 0.9, 0.9, 0.9, 0.9, 0.8)]
+    ramp.run_ramp_training(
+        EvidenceModel(),
+        train_dataset=graphs[:4],
+        val_dataset=graphs[4:6],
+        test_dataset=graphs[6:],
+        output_dir=tmp_path,
+        config=TrainConfig(
+            epochs=1,
+            patience=1,
+            device="cpu",
+            max_nodes=100,
+            max_edges=100,
+            evaluate_test=False,
+        ),
+        ramp_config=ramp.RampConfig(
+            lambda_rank=0.25,
+            lambda_auxiliary=0.2,
+            rank_warmup_epochs=0,
+            rank_ramp_epochs=0,
+            pair_batch_size=1,
+        ),
+        initial_pairs=pairs,
+    )
+
+    paired_call = next(call for call in calls if call["positive_logits"].numel())
+    assert paired_call["auxiliary_logits"] is not None
+    assert paired_call["positive_evidence_logits"] is not None
+    assert paired_call["matched_negative_evidence_logits"] is not None
+    assert paired_call["lambda_auxiliary"] == pytest.approx(0.2)
+    assert paired_call["lambda_rank"] == pytest.approx(0.25)
+    history = json.loads((tmp_path / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["auxiliary_loss"] == pytest.approx(0.3)
+    assert history[0]["effective_lambda_rank"] == pytest.approx(0.25)
+    assert history[0]["pre_rank_objective_per_step"] == pytest.approx(0.56)
+    assert history[0]["weighted_ranking_loss_per_step"] == pytest.approx(0.025)
 
 
 def test_ramp_training_can_defer_strict_test_metrics(tmp_path: Path) -> None:
