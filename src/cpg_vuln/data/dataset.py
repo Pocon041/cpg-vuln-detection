@@ -36,8 +36,6 @@ _RISKY_CALL_TOKENS = {
     "strcpy",
     "strlen",
 }
-_GUARD_CONTROL_TYPES = {"IF", "SWITCH", "FOR", "WHILE", "DO"}
-_DATAFLOW_LABELS = {"IDENTIFIER", "METHOD_PARAMETER_IN", "LOCAL", "RETURN"}
 _MEMORY_ACCESS_LABELS = {"CALL", "IDENTIFIER", "FIELD_IDENTIFIER", "LOCAL"}
 
 
@@ -75,6 +73,8 @@ class TopologyDataset:
         )
         if "edge_type" in payload:
             data.edge_type = payload["edge_type"]
+        if "slice_node_mask" in payload:
+            data.slice_node_mask = payload["slice_node_mask"].bool()
         seed_type_id = _slice_seed_type_ids(payload)
         data.slice_seed_type_id = seed_type_id
         data.slice_seed_mask = seed_type_id.ne(SLICE_SEED_NONE)
@@ -94,26 +94,24 @@ def _slice_seed_type_ids(payload: dict[str, object]) -> torch.Tensor:
         for value in payload.get("method_full_names", [])
     ]
     codes = [str(value).lower() for value in payload.get("code_summaries", [])]
-    control_types = [
-        str(value).upper() for value in payload.get("control_structure_types", [])
-    ]
     count = len(labels)
-    result = torch.zeros(count, dtype=torch.long)
+    risky_calls: list[int] = []
+    memory_accesses: list[int] = []
     for index in range(count):
         label = labels[index]
         code = codes[index] if index < len(codes) else ""
         name = names[index] if index < len(names) else ""
         method_name = method_names[index] if index < len(method_names) else ""
-        control_type = control_types[index] if index < len(control_types) else ""
         combined = f"{name} {method_name} {code}"
         if label == "CALL" and _is_risky_call(combined):
-            result[index] = SLICE_SEED_RISKY_CALL
-        elif label == "CONTROL_STRUCTURE" or control_type in _GUARD_CONTROL_TYPES:
-            result[index] = SLICE_SEED_GUARD
+            risky_calls.append(index)
         elif label in _MEMORY_ACCESS_LABELS and _is_memory_access(combined):
-            result[index] = SLICE_SEED_MEMORY_ACCESS
-        elif label in _DATAFLOW_LABELS and _is_dataflow_anchor(combined):
-            result[index] = SLICE_SEED_DATAFLOW
+            memory_accesses.append(index)
+    result = torch.zeros(count, dtype=torch.long)
+    if risky_calls:
+        result[risky_calls] = SLICE_SEED_RISKY_CALL
+    else:
+        result[memory_accesses] = SLICE_SEED_MEMORY_ACCESS
     return result
 
 
@@ -123,7 +121,3 @@ def _is_risky_call(text: str) -> bool:
 
 def _is_memory_access(text: str) -> bool:
     return any(token in text for token in ("[", "->", "*", "<operator>.indexaccess", "<operator>.fieldaccess"))
-
-
-def _is_dataflow_anchor(text: str) -> bool:
-    return any(token in text for token in ("len", "size", "count", "src", "dst", "buf", "ptr"))

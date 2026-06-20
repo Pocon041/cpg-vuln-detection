@@ -218,6 +218,24 @@ def test_ramp_model_fingerprint_changes_with_v3_slice_settings() -> None:
     )
 
 
+def test_ramp_model_fingerprint_includes_topology_schema() -> None:
+    import cpg_vuln.training.runner as runner
+    from cpg_vuln.data.store import TOPOLOGY_CACHE_SCHEMA_VERSION
+
+    fingerprint = runner._ramp_model_fingerprint("ramp-v3-slice-mil", "core-cpg", {})
+
+    assert fingerprint == runner.sha256_json(
+        {
+            "model_name": "ramp-v3-slice-mil",
+            "view": "core-cpg",
+            "model": {},
+            "ramp_v2": {},
+            "ramp_v3": {},
+            "topology_cache_schema_version": TOPOLOGY_CACHE_SCHEMA_VERSION,
+        }
+    )
+
+
 def test_ramp_model_constructs_gated_rgcn() -> None:
     import cpg_vuln.training.runner as runner
     from cpg_vuln.models.ramp_v2 import RampV2GatedRGCNCPG

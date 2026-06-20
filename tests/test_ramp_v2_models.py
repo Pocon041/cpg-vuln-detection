@@ -194,6 +194,32 @@ def test_ramp_v3_slice_mil_falls_back_to_all_nodes_without_seed_mask() -> None:
     assert output.diagnostics["slice_candidate_count_mean"].item() == 4.0
 
 
+def test_ramp_v3_slice_mil_uses_slice_node_mask_scope() -> None:
+    graphs = [_graph(0), _graph(1)]
+    for graph in graphs:
+        del graph.slice_seed_mask
+        del graph.slice_seed_type_id
+        graph.slice_node_mask = torch.tensor([True, False, True, False], dtype=torch.bool)
+    batch = Batch.from_data_list(graphs)
+    model = RampV3SliceMILCPG(
+        input_dim=8,
+        function_dim=8,
+        num_node_types=3,
+        num_relations=4,
+        hidden_dim=16,
+        node_type_dim=4,
+        layers=2,
+        dropout=0.0,
+        encoder="rgcn",
+        slice_top_k=2,
+    )
+
+    output = model(batch)
+
+    assert output.diagnostics is not None
+    assert output.diagnostics["slice_candidate_count_mean"].item() == 2.0
+
+
 def test_ramp_v2_rejects_flat_function_features() -> None:
     batch = Batch.from_data_list([_graph(0), _graph(1)])
     batch.function_x = batch.function_x.reshape(-1)

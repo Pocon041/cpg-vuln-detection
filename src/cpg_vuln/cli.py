@@ -21,6 +21,7 @@ from cpg_vuln.features.word2vec import build_word2vec_cache
 from cpg_vuln.mining.hard_negative_bank import write_pair_audit_sample
 from cpg_vuln.mining.weak_baselines import run_weak_baselines
 try:
+    from cpg_vuln.end2end.training import train_end2end
     from cpg_vuln.training.runner import (
         evaluate_ramp,
         train_baselines,
@@ -37,7 +38,7 @@ except ModuleNotFoundError as error:
             "torch_geometric is required for training commands"
         ) from error
 
-    evaluate_ramp = train_baselines = train_devign = train_enhanced = train_ramp = _missing_torch_geometric
+    evaluate_ramp = train_baselines = train_devign = train_end2end = train_enhanced = train_ramp = _missing_torch_geometric
 from cpg_vuln.visualization.explain import export_attention_dashboard, export_top_k_explanations
 from cpg_vuln.visualization.report import summarize_runs
 
@@ -164,6 +165,28 @@ def main(argv: list[str] | None = None) -> None:
             epochs=args.epochs,
             force=args.force,
         )
+    elif args.command == "train-end2end":
+        train_end2end(
+            config,
+            split=args.split,
+            model_name=args.model_name,
+            run_name=args.run_name,
+            max_length=args.max_length,
+            stride=args.stride,
+            max_chunks=args.max_chunks,
+            max_batch_chunks=args.max_batch_chunks,
+            freeze_encoder=args.freeze_encoder,
+            checkpoint_metric=args.checkpoint_metric,
+            threshold_strategy=args.threshold_strategy,
+            learning_rate=args.learning_rate,
+            positive_class_weight=args.positive_class_weight,
+            checkpoint_min_ppr=args.checkpoint_min_ppr,
+            checkpoint_max_ppr=args.checkpoint_max_ppr,
+            checkpoint_max_recall=args.checkpoint_max_recall,
+            evaluate_test=not args.defer_test,
+            epochs=args.epochs,
+            force=args.force,
+        )
     elif args.command == "weak-baselines":
         run_weak_baselines(config, split=args.split, view=args.view)
     elif args.command == "train-ramp":
@@ -277,6 +300,28 @@ def _parser() -> argparse.ArgumentParser:
     devign.add_argument("--defer-test", action="store_true")
     devign.add_argument("--epochs", type=int)
     devign.add_argument("--force", action="store_true")
+    end2end = commands.add_parser("train-end2end")
+    end2end.add_argument("--split", choices=("course", "strict"), default="strict")
+    end2end.add_argument("--model-name")
+    end2end.add_argument("--run-name")
+    end2end.add_argument("--max-length", type=int)
+    end2end.add_argument("--stride", type=int)
+    end2end.add_argument("--max-chunks", type=int)
+    end2end.add_argument("--max-batch-chunks", type=int)
+    end2end.add_argument("--freeze-encoder", action="store_true", default=None)
+    end2end.add_argument(
+        "--checkpoint-metric",
+        choices=("loss", "f1", "roc_auc", "pr_auc", "mcc", "balanced_accuracy"),
+    )
+    end2end.add_argument("--threshold-strategy", choices=("fixed_0_5", "val_f1", "val_mcc"))
+    end2end.add_argument("--learning-rate", type=float)
+    end2end.add_argument("--positive-class-weight", type=float)
+    end2end.add_argument("--checkpoint-min-ppr", type=float)
+    end2end.add_argument("--checkpoint-max-ppr", type=float)
+    end2end.add_argument("--checkpoint-max-recall", type=float)
+    end2end.add_argument("--defer-test", action="store_true")
+    end2end.add_argument("--epochs", type=int)
+    end2end.add_argument("--force", action="store_true")
     weak = commands.add_parser("weak-baselines")
     weak.add_argument("--split", choices=("course", "strict"), default="strict")
     weak.add_argument("--view", default="core-cpg")

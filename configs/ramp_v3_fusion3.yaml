@@ -1,0 +1,7 @@
+ramp_v3:
+  slice_top_k: 3
+  slice_temperature: 1.0
+  fusion_logit_init: [3.0, 0.0, 0.0, -0.5]
+  lambda_auxiliary: 0.2
+  rank_warmup_epochs: 5
+  rank_ramp_epochs: 5

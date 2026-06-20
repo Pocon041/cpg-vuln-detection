@@ -1,0 +1,15 @@
+end2end:
+  model_name: microsoft/codebert-base
+  max_length: 128
+  stride: 64
+  max_chunks: 2
+  max_batch_chunks: 16
+  learning_rate: 0.000005
+  dropout: 0.2
+  freeze_encoder: false
+  local_files_only: true
+  loss: cross_entropy
+  positive_class_weight: 1.65
+  checkpoint_min_ppr: 0.25
+  checkpoint_max_ppr: 0.75
+  checkpoint_max_recall: 0.90

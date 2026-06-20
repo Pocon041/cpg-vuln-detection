@@ -39,7 +39,7 @@ from cpg_vuln.utils.fingerprint import (
 
 
 CANONICAL_VIEWS = tuple(sorted(VIEW_RELATIONS))
-COMPLETION_SCHEMA_VERSION = 1
+COMPLETION_SCHEMA_VERSION = 3
 LOCK_FILENAME = ".build-topologies.lock"
 
 
@@ -101,9 +101,11 @@ def _commit_sample(
     root = choose_primary_method(graph)
     scope = build_scope_context(graph, root, normalization_spec)
     normalizer = IdentifierSemanticNormalizer(normalization_spec)
+    topologies = {view: build_view(graph, root, view) for view in CANONICAL_VIEWS}
+    slice_node_ids = set(topologies["slice-cpg"].original_node_ids)
     payloads = {
         view: build_topology_payload(
-            build_view(graph, root, view),
+            topologies[view],
             record.sample_id,
             record.label,
             texts,
@@ -112,6 +114,7 @@ def _commit_sample(
             normalizer=normalizer,
             scope=scope,
             spec=normalization_spec,
+            slice_node_ids=slice_node_ids,
         )
         for view in CANONICAL_VIEWS
     }

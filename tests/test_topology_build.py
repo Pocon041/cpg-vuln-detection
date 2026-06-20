@@ -36,7 +36,7 @@ def _index(output_dir: Path) -> list[dict]:
 
 def _assert_valid_transaction(output_dir: Path, sample_id: str = "sample_1") -> None:
     marker = _marker(output_dir, sample_id)
-    assert marker["schema_version"] == 1
+    assert marker["schema_version"] == build_module.COMPLETION_SCHEMA_VERSION
     assert marker["sample_id"] == sample_id
     assert marker["views"] == sorted(CANONICAL_VIEWS)
     assert marker["text_registry_size_at_commit"] <= len(
@@ -60,6 +60,29 @@ def _assert_valid_transaction(output_dir: Path, sample_id: str = "sample_1") -> 
         payload = load_topology(Path(item["path"]))
         assert item["commit_id"] == marker["commit_id"] == payload["commit_id"]
         assert payload["cache_schema_version"] == TOPOLOGY_CACHE_SCHEMA_VERSION
+
+
+def test_completion_schema_tracks_slice_strategy_version() -> None:
+    assert build_module.COMPLETION_SCHEMA_VERSION == 3
+
+
+def test_build_topologies_records_slice_node_mask_for_core_view(tmp_path: Path) -> None:
+    output_dir = tmp_path / "topologies"
+    record = _record(tmp_path)
+    write_graphml(Path(record.graphml_path), include_unrelated_ast=True)
+
+    build_topologies([record], output_dir)
+
+    core = load_topology(output_dir / "core-cpg" / "sample_1.pt")
+    sliced = load_topology(output_dir / "slice-cpg" / "sample_1.pt")
+    mask = core["slice_node_mask"].tolist()
+    core_ids = core["original_node_ids"]
+    slice_ids = set(sliced["original_node_ids"])
+
+    assert len(mask) == len(core_ids)
+    assert {node_id for node_id, keep in zip(core_ids, mask) if keep} == slice_ids
+    assert "7" in core_ids
+    assert not mask[core_ids.index("7")]
 
 
 def test_build_topologies_commits_canonical_views_with_marker_last(tmp_path: Path) -> None:

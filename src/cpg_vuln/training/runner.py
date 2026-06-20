@@ -11,7 +11,11 @@ from tqdm import tqdm
 from cpg_vuln.data.batch import GraphSize
 from cpg_vuln.data.dataset import TopologyDataset
 from cpg_vuln.data.layout import ArtifactLayout
-from cpg_vuln.data.store import NodeTypeRegistry, load_topology
+from cpg_vuln.data.store import (
+    TOPOLOGY_CACHE_SCHEMA_VERSION,
+    NodeTypeRegistry,
+    load_topology,
+)
 from cpg_vuln.features.cache import MemmapFeatureCache
 from cpg_vuln.features.normalization import NormalizationSpec
 from cpg_vuln.mining.hard_negative_bank import (
@@ -713,6 +717,7 @@ def _ramp_model_fingerprint(model_name: str, view: str, config: dict) -> str:
             "model": config.get("model", {}),
             "ramp_v2": config.get("ramp_v2", {}),
             "ramp_v3": config.get("ramp_v3", {}),
+            "topology_cache_schema_version": TOPOLOGY_CACHE_SCHEMA_VERSION,
         }
     )
 

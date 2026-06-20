@@ -355,10 +355,17 @@ class RampV3SliceMILCPG(RampV2CPG):
         seed_mask = getattr(data, "slice_seed_mask", None)
         if seed_mask is not None:
             seed_mask = seed_mask.bool()
+        slice_node_mask = getattr(data, "slice_node_mask", None)
+        if slice_node_mask is not None:
+            slice_node_mask = slice_node_mask.bool()
         for graph_index in range(int(data.num_graphs)):
             graph_mask = data.batch == graph_index
             candidate_mask = graph_mask
-            if seed_mask is not None:
+            if slice_node_mask is not None:
+                scoped = graph_mask & slice_node_mask
+                if bool(scoped.any()):
+                    candidate_mask = scoped
+            elif seed_mask is not None:
                 seeded = graph_mask & seed_mask
                 if bool(seeded.any()):
                     candidate_mask = seeded

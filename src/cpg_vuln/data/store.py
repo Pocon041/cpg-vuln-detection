@@ -17,7 +17,7 @@ from cpg_vuln.features.text import NodeTextRegistry, normalize_node_text
 from cpg_vuln.utils.fingerprint import write_json_atomic
 
 
-TOPOLOGY_CACHE_SCHEMA_VERSION = 2
+TOPOLOGY_CACHE_SCHEMA_VERSION = 3
 
 
 class NodeTypeRegistry:
@@ -81,6 +81,7 @@ def build_topology_payload(
     normalizer: IdentifierSemanticNormalizer | None = None,
     scope: ScopeContext | None = None,
     spec: NormalizationSpec | None = None,
+    slice_node_ids: set[str] | None = None,
 ) -> dict[str, object]:
     spec = spec or NormalizationSpec(mode="raw")
     normalizer = normalizer or IdentifierSemanticNormalizer(spec)
@@ -130,6 +131,11 @@ def build_topology_payload(
     }
     if topology.edge_types:
         payload["edge_type"] = torch.tensor(topology.edge_types, dtype=torch.long)
+    if slice_node_ids is not None:
+        payload["slice_node_mask"] = torch.tensor(
+            [node_id in slice_node_ids for node_id in topology.original_node_ids],
+            dtype=torch.bool,
+        )
     payload["node_labels"] = [node.label for node in topology.nodes]
     payload["node_names"] = [_attr(node, "NAME") for node in topology.nodes]
     payload["method_full_names"] = [_attr(node, "METHOD_FULL_NAME") for node in topology.nodes]

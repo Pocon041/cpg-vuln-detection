@@ -12,6 +12,7 @@ from cpg_vuln.data.store import (
     build_topology_payload,
     load_topology,
     save_topology,
+    save_topology_payload,
     topology_index_record,
 )
 from cpg_vuln.data.topology import GraphTopology, build_view
@@ -51,6 +52,34 @@ def test_topology_payload_records_cache_schema_and_commit_id(tmp_path: Path) -> 
         "nodes": len(topology.nodes),
         "edges": len(topology.edges),
     }
+
+
+def test_topology_payload_records_slice_node_mask() -> None:
+    topology = GraphTopology(
+        view="core-cpg",
+        original_node_ids=["1", "2", "3"],
+        nodes=[
+            GraphNode("1", "METHOD", {"NAME": "f"}),
+            GraphNode("2", "CALL", {"CODE": "strcpy(dst, src)"}),
+            GraphNode("3", "CALL", {"CODE": "log_event()"}),
+        ],
+        edges=[],
+        relation_names=set(),
+        edge_types=[],
+        edge_type_names={},
+    )
+
+    payload = build_topology_payload(
+        topology,
+        "sample_1",
+        1,
+        NodeTextRegistry(),
+        NodeTypeRegistry(),
+        commit_id="commit-123",
+        slice_node_ids={"1", "2"},
+    )
+
+    assert payload["slice_node_mask"].tolist() == [True, True, False]
 
 
 def test_topology_payload_keeps_structured_node_fields() -> None:
@@ -131,7 +160,7 @@ def test_saved_topology_loads_as_pyg_data_with_external_feature_cache(tmp_path: 
 def test_topology_dataset_exposes_slice_seed_metadata(tmp_path: Path) -> None:
     pytest.importorskip("torch_geometric")
     from cpg_vuln.data.dataset import (
-        SLICE_SEED_GUARD,
+        SLICE_SEED_MEMORY_ACCESS,
         SLICE_SEED_RISKY_CALL,
         TopologyDataset,
     )
@@ -154,14 +183,71 @@ def test_topology_dataset_exposes_slice_seed_metadata(tmp_path: Path) -> None:
     node_types = NodeTypeRegistry()
     topology_path = tmp_path / "sample.pt"
     save_topology(topology_path, topology, "sample_1", 0, texts, node_types)
+    memory_only_topology = GraphTopology(
+        view="core-cpg",
+        original_node_ids=["1", "2", "3"],
+        nodes=[
+            GraphNode("1", "METHOD", {"NAME": "f", "CODE": "int f(char *src)"}),
+            GraphNode("2", "CONTROL_STRUCTURE", {"CONTROL_STRUCTURE_TYPE": "IF", "CODE": "if (len < sizeof(buf))"}),
+            GraphNode("3", "IDENTIFIER", {"CODE": "buf[i]"}),
+        ],
+        edges=[(0, 1), (1, 2)],
+        relation_names={"AST", "CFG"},
+        edge_types=[0, 1],
+        edge_type_names={"AST": 0, "CFG": 1},
+    )
+    memory_path = tmp_path / "memory_only.pt"
+    save_topology(memory_path, memory_only_topology, "sample_2", 0, texts, node_types)
     features = MemmapFeatureCache.create(tmp_path / "features", rows=len(texts), dim=4)
     features.write(list(range(len(texts))), np.ones((len(texts), 4), dtype=np.float32))
 
     data = TopologyDataset([topology_path], node_features=features)[0]
 
-    assert data.slice_seed_mask.tolist() == [False, True, True, True]
-    assert data.slice_seed_type_id.tolist()[1] == SLICE_SEED_GUARD
+    assert data.slice_seed_mask.tolist() == [False, False, True, False]
     assert data.slice_seed_type_id.tolist()[2] == SLICE_SEED_RISKY_CALL
+
+    memory_data = TopologyDataset([memory_path], node_features=features)[0]
+
+    assert memory_data.slice_seed_mask.tolist() == [False, False, True]
+    assert memory_data.slice_seed_type_id.tolist()[2] == SLICE_SEED_MEMORY_ACCESS
+
+
+def test_topology_dataset_exposes_slice_node_mask(tmp_path: Path) -> None:
+    pytest.importorskip("torch_geometric")
+    from cpg_vuln.data.dataset import TopologyDataset
+
+    topology = GraphTopology(
+        view="core-cpg",
+        original_node_ids=["1", "2", "3"],
+        nodes=[
+            GraphNode("1", "METHOD", {"NAME": "f"}),
+            GraphNode("2", "CALL", {"CODE": "strcpy(dst, src)"}),
+            GraphNode("3", "CALL", {"CODE": "log_event()"}),
+        ],
+        edges=[],
+        relation_names=set(),
+        edge_types=[],
+        edge_type_names={},
+    )
+    texts = NodeTextRegistry()
+    node_types = NodeTypeRegistry()
+    payload = build_topology_payload(
+        topology,
+        "sample_1",
+        1,
+        texts,
+        node_types,
+        commit_id="commit-123",
+        slice_node_ids={"1", "2"},
+    )
+    topology_path = tmp_path / "sample.pt"
+    save_topology_payload(topology_path, payload)
+    features = MemmapFeatureCache.create(tmp_path / "features", rows=len(texts), dim=4)
+    features.write(list(range(len(texts))), np.ones((len(texts), 4), dtype=np.float32))
+
+    data = TopologyDataset([topology_path], node_features=features)[0]
+
+    assert data.slice_node_mask.tolist() == [True, True, False]
 
 
 def test_topology_payload_rejects_non_raw_without_scope() -> None:
