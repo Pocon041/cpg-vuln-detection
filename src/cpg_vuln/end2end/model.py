@@ -75,7 +75,7 @@ class RawCodeMILTransformer(nn.Module):
         ).mean()
         return ModelOutput(
             logits=logits,
-            node_attention=None,
+            node_attention=weights,
             diagnostics={
                 "chunk_count_mean": torch.bincount(chunk_batch).float().mean(),
                 "chunk_attention_entropy_mean": entropy,

@@ -146,7 +146,11 @@ def test_raw_code_mil_transformer_aggregates_chunks_per_function() -> None:
     output = model(batch)
 
     assert output.logits.shape == (2, 2)
-    assert output.node_attention is None
+    assert output.node_attention is not None
+    assert output.node_attention.shape == (4,)
+    assert torch.all(output.node_attention >= 0.0)
+    assert torch.all(output.node_attention <= 1.0)
+    assert torch.allclose(output.node_attention.view(2, 2).sum(dim=1), torch.ones(2))
     assert output.diagnostics is not None
     assert output.diagnostics["chunk_count_mean"].item() == 2.0
     assert output.diagnostics["chunk_attention_entropy_mean"].item() > 0.0
