@@ -1,88 +1,139 @@
 # CPG 漏洞检测实验工程
 
-本项目从 Joern 导出的 GraphML 构建函数级 CPG 表示，并在 Devign 风格基线、RGCN、RAMP hard-negative 训练和命名归一化实验之间做系统对比。当前主线目标是：在固定 `0.5` 阈值评价下，尽可能提高漏洞检测指标，同时避免通过“几乎全判为漏洞”来虚高 F1。
+本项目面向 F&Q / Devign 函数级漏洞检测任务，系统比较两条路线：一条路线先把 C/C++ 函数转换为代码属性图（CPG），再进行图表示学习；另一条路线完全不构造 AST、CFG、PDG 或 CPG，直接从源码 token 序列进行端到端学习。
+
+当前实验的核心约束是固定 `0.5` 阈值评价。我们不使用验证集最优 F1 阈值重新调节测试阈值，因为这会很容易把 Recall 和 PPR 推高到接近全正类预测。所有正式结果必须同时报告 Precision、Recall、F1、MCC、PPR、ROC-AUC 和 PR-AUC。
+
+论文版总报告见 [终极论文版实验报告.md](终极论文版实验报告.md)。阶段性实验记录见 [实验报告2.md](实验报告2.md)，数据预处理记录见 [数据预处理.md](数据预处理.md)。
 
 ---
 
-## 当前最优结果
+## 当前结论
 
-以下结果截至 2026-06-16，均来自 `strict` split，均使用固定 `0.5` 阈值的 `test_fixed_0_5` 指标。`PPR` 是 predicted positive rate，用于监控模型是否过度预测正类。
+截至 2026-06-21，当前最适合作为论文主结果的是 `RAMP-v2A`。它不是历史最高 F1 的配置，但在固定 `0.5` 阈值下同时取得当前最高 F1 和最高 MCC，并且 PPR 低于历史最高 F1 版本，因此更适合作为稳健主结果。
 
-| 定位 | Run | Normalization | Model | Checkpoint | F1 | Precision | Recall | MCC | PPR | PR-AUC |
-| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 最高 F1 | `ramp-E4-v2A-raw-v1-fixed05-guarded-f1-lr3e4-20e` | `raw-v1` | `ramp-v2-rgcn` | `f1` | **0.6312** | 0.5260 | 0.7890 | 0.1655 | 0.7097 | 0.5896 |
-| 最均衡单模型 | `ramp-E4-v2A-raw-v1-fixed05-mcc-lr3e4-probe` | `raw-v1` | `ramp-v2-rgcn` | `mcc` | 0.6263 | 0.5344 | 0.7565 | 0.1748 | 0.6697 | 0.5935 |
-| 最高 MCC/PR-AUC | `ramp-E4-v2Dual-raw-v1-fixed05-mcc-lr3e4-20e` | `raw-v1` | `ramp-v2-dual` | `mcc` | 0.6186 | **0.5400** | 0.7240 | **0.1763** | **0.6344** | **0.5975** |
-| 干净匿名对照 | `ramp-E4-v2A-lr1e4-fixed05-guarded-f1-full-anon-fn-anon-strict-36e` | `full-anon-v1` | `ramp-v2-rgcn` | `f1` | 0.5806 | 0.5073 | 0.6786 | 0.0898 | 0.6329 | 0.5700 |
+四个核心方法如下：
 
-当前建议：
+| 路线 | 方法 | 定位 |
+| --- | --- | --- |
+| CPG 图学习 | `RAMP-v2A` | 主方法，关系感知 CPG 与 CodeBERT 融合 |
+| CPG 图学习 | `RAMP-v2Gated` | 聚合后节点级门控残差 RGCN，用于检验 CPG 噪声问题 |
+| CPG 图学习 | `RAMP-v3 Slice-MIL` | 切片级弱监督局部证据建模，用于处理函数级弱标签 |
+| 端到端源码学习 | `RawCode-MIL` | 不构造中间表示，直接从源码 token 窗口学习 |
 
-- 论文主结果若强调最高 F1，使用 `ramp-v2-rgcn + E4 + checkpoint=f1 + guard`。
-- 若强调结果稳健性，使用 `ramp-v2-rgcn + E4 + checkpoint=mcc` 作为主单模型。
-- 若强调新增结构贡献，使用 `ramp-v2-dual`，它的 MCC 和 PR-AUC 更高，但 F1 不是最高。
-- `full-anon-v1` 是去命名泄漏和鲁棒性对照，不适合作为当前冲指标主结果。
-
-不要把旧的 full-anon run 中 `function_source_normalization=raw` 的结果当作干净匿名结果。干净匿名结果必须同时满足 `normalization_key=full-anon-v1` 和 `function_source_normalization=full-anon-v1`。
+`RAMP-v2Dual` 保留为诊断消融。它显式拆分 graph head、semantic head 和 fusion head，有助于解释图分支与语义分支的贡献，但不作为四个核心方法之一。
 
 ---
 
-## 方法概览
+## 当前主要结果
 
-### 图表示
+以下结果均来自 `strict` split，均使用固定 `0.5` 阈值的测试集指标。测试集包含 `652` 个样本，其中正类 `309` 个、负类 `343` 个，真实正类比例约为 `0.4739`。`PPR` 是 predicted positive rate，用于监控模型是否过度预测正类。
 
-每个函数被转换为图样本，节点来自代码属性图中的语法或语义节点，边来自不同关系：
+| 类别 | Run | Model | Precision | Recall | F1 | MCC | PPR | ROC-AUC | PR-AUC |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 主结果 | `ramp-E4-v2A-core-cpg-current-schema-fixed05-guarded-f1-rank02-replay025-20e` | `ramp-v2-rgcn` | 0.5399 | 0.7468 | **0.6267** | **0.1841** | 0.6544 | **0.6233** | **0.6079** |
+| 诊断消融 | `ramp-E4-v2Dual-raw-v1-fixed05-mcc-lr3e4-20e` | `ramp-v2-dual` | **0.5400** | 0.7240 | 0.6186 | 0.1763 | **0.6344** | 0.6163 | 0.5975 |
+| 图门控 | `ramp-E4-v2Gated-raw-v1-fixed05-guarded-f1-lr3e4-25e` | `ramp-v2-gated-rgcn` | 0.5218 | **0.7760** | 0.6240 | 0.1503 | 0.7035 | 0.6150 | 0.5928 |
+| Slice-MIL | `ramp-E4-v3SliceMIL-core-cpg-trueSliceMask-20e-noRank-aux02-fusion3` | `ramp-v3-slice-mil` | 0.5379 | 0.7370 | 0.6219 | 0.1762 | 0.6482 | 0.6164 | 0.5948 |
+| 端到端源码 | `end2end-codebert-mil-strict-fixed05-posw165` | `RawCode-MIL` | 0.5172 | 0.7282 | 0.6048 | 0.1228 | 0.6672 | 0.6165 | 0.6004 |
 
-| View | 使用关系 |
-| --- | --- |
-| `ast` | `AST` |
-| `cfg` | `CFG` |
-| `pdg` | `CDG`, `REACHING_DEF` |
-| `core-cpg` | `AST`, `CFG`, `CDG`, `REACHING_DEF` |
-| `dataflow-cpg` | `CFG`, `CDG`, `REACHING_DEF` |
-| `slice-cpg` | 从风险调用、数组、指针表达式等种子出发扩展局部 CPG |
+结果解释：
 
-当前最优 RAMP 实验使用 `core-cpg`。
-
-### 模型路线
-
-| 模型 | 作用 |
-| --- | --- |
-| `GCNClassifier` | 课程基线，分别在 `ast`、`cfg`、`pdg` 上训练 |
-| `SelectiveFusionCPG` | 早期增强模型，融合图表示和函数级 CodeBERT 表示 |
-| `DevignCPG` | GGNN+Conv 风格基线，用于对照经典 Devign 思路 |
-| `RampV2CPG` / `ramp-v2-rgcn` | 当前主模型，使用 RGCN 区分不同 CPG 边类型，并融合函数级 CodeBERT |
-| `RampV2DualHeadCPG` / `ramp-v2-dual` | 新增双头版本，分别保留图结构分支、语义分支和融合分支的 logits |
-
-### RAMP 实验编号
-
-| 实验 | 含义 |
-| --- | --- |
-| `E0` | 无 hard-negative replay/ranking 的 RAMP 基础训练 |
-| `E1` | 随机 hard-negative replay |
-| `E2` | false-positive-only hard-negative replay |
-| `E3` | motif-matched hard-negative bank |
-| `E4` | 在 E3 bank 上加入 ranking loss，是当前主实验 |
-
-`E4` 依赖 `artifacts/normalization/<key>/retrieval/<split>/E3/bank.jsonl`。如果该文件不存在，需要先运行一次 `E3`。
+1. `RAMP-v2A` 是当前最稳健主模型，F1 和 MCC 均为当前最高。
+2. `RAMP-v2Gated` 的 Recall 最高，但 PPR 也最高，说明它更倾向于扩大正类预测范围。
+3. `RAMP-v3 Slice-MIL` 的理论动机更强，但当前 slice 分支权重偏低，还没有真正主导最终决策。
+4. `RawCode-MIL` 证明不构造中间表示也能学到有效信号，但 MCC 明显低于 `RAMP-v2A`，说明显式结构建模仍然有价值。
+5. 所有方法的 PPR 都高于测试集真实正类比例，后续优化不能只追求 Recall 或 F1，必须同步控制 PPR 并提高 MCC。
 
 ---
 
-## 实验流程
+## 数据与预处理
+
+数据集路径由 `configs/default.yaml` 管理：
+
+| 项 | 默认路径 |
+| --- | --- |
+| GraphML 数据 | `data/fq_graphml_dataset` |
+| 标签 CSV | `data/fq_graphml_dataset/metadata/labels.csv` |
+| 源码根目录 | `F&Q/F&Q` |
+| 中间产物 | `artifacts/` |
+| 训练输出 | `outputs/` |
+
+当前 manifest 共保留 `6503` 个可用函数样本，其中负类 `3429` 个、正类 `3074` 个。严格划分使用规范化源码哈希分组，避免同源函数跨训练、验证和测试集合泄漏。
+
+| Split | 样本数 | 负类 | 正类 | 正类比例 |
+| --- | ---: | ---: | ---: | ---: |
+| Train | 5201 | 2743 | 2458 | 0.4726 |
+| Validation | 650 | 343 | 307 | 0.4723 |
+| Test | 652 | 343 | 309 | 0.4739 |
+| Total | 6503 | 3429 | 3074 | 0.4727 |
+
+预处理阶段需要特别注意真实项目宏缺失问题。早期实验中，部分样本能够生成 `cpg.bin`，但导出的 PDG 为空图，原因是 FFmpeg 这类项目中的 `av_cold` 宏没有随数据集头文件一起提供，导致 Joern C frontend 无法正确识别函数声明。补充类似 `#define av_cold` 的兼容宏后，CPG 可以正确识别函数、调用和操作符节点。
 
 ```mermaid
 flowchart LR
-    accTitle: CPG Experiment Pipeline
-    accDescr: Pipeline from dataset audit through topology construction, feature caching, hard-negative mining, training, and result reporting
-
-    audit([Audit dataset]) --> topology[Build topologies]
-    topology --> features[Build feature caches]
-    features --> bank[Build E3 hard-negative bank]
-    bank --> train[Train E4 RAMP model]
-    train --> evaluate[Evaluate fixed 0.5 metrics]
-    evaluate --> report([Summarize results])
+    source[C/C++ function] --> macro[compatibility macros]
+    macro --> cpg[cpg.bin]
+    cpg --> validate[method validation]
+    validate --> views[AST / CFG / PDG / CPG]
+    views --> cache[CodeBERT feature cache]
+    cache --> train[training]
 ```
 
-训练阶段只读取离线缓存，不会在训练时重新加载 Transformer。CodeBERT 首次构建缓存时会下载 `microsoft/codebert-base`。
+---
+
+## 文本归一化
+
+项目支持三种节点文本与函数源码文本归一化模式：
+
+| Config | normalization key | 用途 |
+| --- | --- | --- |
+| `configs/default.yaml` | `raw-v1` | 保留原始命名，是当前主结果配置 |
+| `configs/semantic_anon.yaml` | `semantic-anon-v1` | 匿名用户命名，同时保留部分语义标签和 API 类别 |
+| `configs/full_anon.yaml` | `full-anon-v1` | 更强匿名化，用于验证模型是否依赖变量名、函数名和项目命名风格 |
+
+匿名化会处理参数名、局部变量名、字段名、用户自定义函数名、用户自定义类型名以及未知标识符。关键词、基础类型、Joern operator 和部分 API 语义类别会被保留。字面量会被规范为 `STR`、`CHAR`、`HEX`、`FLOAT`、`NUM_0`、`NUM_1`、`NUM_2` 或 `NUM`。
+
+缓存和输出按 normalization key 隔离：
+
+```text
+artifacts/normalization/<key>/topologies/
+artifacts/normalization/<key>/features/
+artifacts/normalization/<key>/retrieval/
+outputs/runs/<key>/
+outputs/reports/<key>/
+```
+
+不要把旧的 `function_source_normalization=raw` 的 full-anon run 当作干净匿名结果。干净匿名结果必须同时满足 `normalization_key=full-anon-v1` 和 `function_source_normalization=full-anon-v1`。
+
+---
+
+## 模型结构
+
+### RAMP-v2A
+
+`RAMP-v2A` 是当前主模型，实现位于 `src/cpg_vuln/models/ramp_v2.py`。它将节点级 CodeBERT 向量、节点类型 embedding、三层 RGCN、MultiPoolReadout 和函数级 CodeBERT 语义分支结合起来。图分支负责传播 AST、CFG、CDG 和 REACHING_DEF 等结构关系，语义分支负责提供函数级源码上下文，fusion gate 负责融合两条分支。
+
+### RAMP-v2Gated
+
+`RAMP-v2Gated` 使用 `ramp-v2-gated-rgcn` 入口。它在 RGCN 聚合之后加入节点级 gate：
+
+```text
+message = RGCNConv(h, edge_index, edge_type)
+gate = sigmoid(W_gate([h, message]))
+candidate = GELU(W_candidate(message))
+h = LayerNorm(h + Dropout(gate * candidate))
+```
+
+这个 gate 是聚合后的节点级更新门控，不是 relation-wise gate，也不是 edge-type gate。因此它不能声称精细抑制某一种 CPG 关系噪声，只能解释为控制节点是否吸收聚合后的整体图消息。
+
+### RAMP-v3 Slice-MIL
+
+`RAMP-v3 Slice-MIL` 使用 `ramp-v3-slice-mil` 入口。它把函数级弱标签问题转化为切片级局部证据聚合问题。候选 slice 优先来自危险 API 调用，例如 `malloc`、`free`、`memcpy`、`strcpy`、`sprintf`、`scanf`、`recv` 和 `read`；如果没有危险 API，则退化使用数组访问、字段访问、指针解引用等内存访问相关节点。模型从候选节点中选择 top-k 风险节点，通过 MIL 聚合得到 slice logits。
+
+### RawCode-MIL
+
+`RawCode-MIL` 位于 `src/cpg_vuln/end2end/`。它直接读取源码，不构造 AST、CFG、PDG 或 CPG。每个函数被切分为若干 CodeBERT token 窗口，每个窗口编码为 chunk 向量，再通过 gated attention MIL 聚合成函数级表示。当前正式配置使用 `max_length=128`、`stride=64`、`max_chunks=2` 和 `positive_class_weight=1.65`。
 
 ---
 
@@ -93,19 +144,14 @@ flowchart LR
 ```powershell
 conda activate EIT
 .\scripts\setup_eit.ps1
-```
-
-Windows PowerShell 中建议显式设置 `PYTHONPATH`：
-
-```powershell
 $env:PYTHONPATH = "src"
 ```
 
-当前工程在 Python 3.13、PyTorch 2.7、CUDA 12.6 和 RTX 4060 8 GB 上验证过。项目路径包含中文时，优先直接激活环境后运行 `python`，不要依赖额外的 `conda run` 包装层。
+项目依赖由 `pyproject.toml` 管理，核心版本包括 Python `3.13`、PyTorch `2.7.0`、PyTorch Geometric `2.7.0`、Transformers `4.51.x`、scikit-learn `1.6.x`、NumPy `2.2.x`、pandas `2.2.x` 和 matplotlib `3.10.x`。训练设备按配置使用 CUDA。项目路径包含中文时，优先直接激活环境后运行 `python`，不要额外套多层 shell 包装。
 
 ---
 
-## 数据审计与缓存构建
+## 构建数据与特征缓存
 
 ### 1. 审计数据集
 
@@ -114,14 +160,7 @@ $env:PYTHONPATH = "src"
 python -m cpg_vuln --config configs/default.yaml audit
 ```
 
-审计读取：
-
-- 标签：`data/fq_graphml_dataset/metadata/labels.csv`
-- GraphML 数据：`data/fq_graphml_dataset`
-- 源码根目录：`F&Q/F&Q`
-- source map override：`configs/source_map_overrides.csv`
-
-输出写入 `artifacts/data/`，包括 `manifest.jsonl`、`course.json` 和 `strict.json`。当前实验优先使用 `strict` split，避免规范化源码重复导致跨集合泄漏。
+审计输出写入 `artifacts/data/`，包括 `manifest.jsonl` 和 strict split。
 
 ### 2. 构建 raw-v1 拓扑与 CodeBERT 缓存
 
@@ -142,24 +181,23 @@ python -m cpg_vuln --config configs/default.yaml build-word2vec --force
 ```powershell
 $env:PYTHONPATH = "src"
 python -m cpg_vuln --config configs/full_anon.yaml build-topologies --force
-python -m cpg_vuln --config configs/full_anon.yaml build-codebert-cache
+python -m cpg_vuln --config configs/full_anon.yaml build-codebert-cache --force
 ```
-
-`full-anon-v1` 会对节点文本和函数源码文本做匿名化，缓存路径与 raw 隔离。
 
 ---
 
-## 复现当前最优 raw-v1 结果
+## 复现实验
 
-以下命令都使用固定 `0.5` 阈值评价，并在 checkpoint 选择时加入 guard：
+所有正式命令都使用固定 `0.5` 阈值，并建议使用以下 checkpoint guard：
 
-- `--checkpoint-min-ppr 0.25`
-- `--checkpoint-max-ppr 0.75`
-- `--checkpoint-max-recall 0.90`
+```text
+0.25 <= checkpoint PPR <= 0.75
+checkpoint recall <= 0.90
+```
 
-这些 guard 用来避免模型为了提高 F1 而把过多样本判为漏洞。
+### 1. 如果 E3 hard-negative bank 不存在
 
-### 1. 如果 E3 bank 不存在，先运行 E3
+`E4` 依赖同一 normalization key 下的 `E3` hard-negative bank。缺失时先运行：
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -183,7 +221,7 @@ python -m cpg_vuln --config configs/default.yaml train-ramp `
   --force
 ```
 
-### 2. 最高 F1 方案
+### 2. RAMP-v2A 主结果
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -192,7 +230,7 @@ python -m cpg_vuln --config configs/default.yaml train-ramp `
   --split strict `
   --view core-cpg `
   --model ramp-v2-rgcn `
-  --run-name ramp-E4-v2A-raw-v1-fixed05-guarded-f1-lr3e4-20e `
+  --run-name ramp-E4-v2A-core-cpg-current-schema-fixed05-guarded-f1-rank02-replay025-20e `
   --lambda-replay 0.25 `
   --lambda-rank 0.20 `
   --margin 0.35 `
@@ -207,7 +245,7 @@ python -m cpg_vuln --config configs/default.yaml train-ramp `
   --force
 ```
 
-### 3. 最均衡单模型方案
+### 3. RAMP-v2Gated
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -215,13 +253,38 @@ python -m cpg_vuln --config configs/default.yaml train-ramp `
   --experiment E4 `
   --split strict `
   --view core-cpg `
-  --model ramp-v2-rgcn `
-  --run-name ramp-E4-v2A-raw-v1-fixed05-mcc-lr3e4-probe `
+  --model ramp-v2-gated-rgcn `
+  --run-name ramp-E4-v2Gated-raw-v1-fixed05-guarded-f1-lr3e4-25e `
   --lambda-replay 0.25 `
   --lambda-rank 0.20 `
   --margin 0.35 `
   --max-pairs-per-positive 2 `
-  --checkpoint-metric mcc `
+  --checkpoint-metric f1 `
+  --threshold-strategy fixed_0_5 `
+  --checkpoint-min-ppr 0.25 `
+  --checkpoint-max-ppr 0.75 `
+  --checkpoint-max-recall 0.90 `
+  --learning-rate 0.0003 `
+  --epochs 25 `
+  --force
+```
+
+### 4. RAMP-v3 Slice-MIL
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m cpg_vuln --config configs/ramp_v3_fusion3.yaml train-ramp `
+  --experiment E4 `
+  --split strict `
+  --view core-cpg `
+  --model ramp-v3-slice-mil `
+  --run-name ramp-E4-v3SliceMIL-core-cpg-trueSliceMask-20e-noRank-aux02-fusion3 `
+  --lambda-replay 0.25 `
+  --lambda-rank 0.0 `
+  --lambda-auxiliary 0.2 `
+  --margin 0.35 `
+  --max-pairs-per-positive 2 `
+  --checkpoint-metric f1 `
   --threshold-strategy fixed_0_5 `
   --checkpoint-min-ppr 0.25 `
   --checkpoint-max-ppr 0.75 `
@@ -231,7 +294,25 @@ python -m cpg_vuln --config configs/default.yaml train-ramp `
   --force
 ```
 
-### 4. 双头模型方案
+### 5. RawCode-MIL 端到端源码学习
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m cpg_vuln --config configs/end2end_codebert_mil.yaml train-end2end `
+  --split strict `
+  --run-name end2end-codebert-mil-strict-fixed05-posw165 `
+  --checkpoint-metric f1 `
+  --threshold-strategy fixed_0_5 `
+  --learning-rate 0.000005 `
+  --positive-class-weight 1.65 `
+  --checkpoint-min-ppr 0.25 `
+  --checkpoint-max-ppr 0.75 `
+  --checkpoint-max-recall 0.90 `
+  --epochs 3 `
+  --force
+```
+
+### 6. RAMP-v2Dual 诊断消融
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -257,37 +338,42 @@ python -m cpg_vuln --config configs/default.yaml train-ramp `
 
 ---
 
-## 复现 full-anon-v1 对照
+## 评估、解释与可视化
 
-先构建 full-anon 缓存，再运行 E3/E4。若 E3 bank 已存在，可以跳过 E3。
+复评估 RAMP run：
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m cpg_vuln --config configs/full_anon.yaml train-ramp `
-  --experiment E4 `
+python -m cpg_vuln --config configs/default.yaml evaluate-ramp `
+  --run ramp-E4-v2A-core-cpg-current-schema-fixed05-guarded-f1-rank02-replay025-20e `
   --split strict `
-  --view core-cpg `
-  --model ramp-v2-rgcn `
-  --run-name ramp-E4-v2A-lr1e4-fixed05-guarded-f1-full-anon-fn-anon-strict-36e `
-  --lambda-replay 0.25 `
-  --lambda-rank 0.20 `
-  --margin 0.35 `
-  --max-pairs-per-positive 2 `
-  --checkpoint-metric f1 `
-  --threshold-strategy fixed_0_5 `
-  --checkpoint-min-ppr 0.25 `
-  --checkpoint-max-ppr 0.75 `
-  --checkpoint-max-recall 0.90 `
-  --learning-rate 0.0001 `
-  --epochs 36 `
-  --force
+  --export-attention
 ```
 
-full-anon 的指标低于 raw-v1 是当前观察到的事实。它的主要用途是证明命名匿名化后模型仍有信号，同时暴露 raw 命名信息对指标的贡献。
+生成 attention 解释：
+
+```powershell
+python -m cpg_vuln --config configs/default.yaml visualize-attention `
+  --run ramp-E4-v2A-core-cpg-current-schema-fixed05-guarded-f1-rank02-replay025-20e
+```
+
+生成论文报告可视化：
+
+```powershell
+python scripts/make_report_visualizations.py
+```
+
+可视化输出位于：
+
+```text
+figures/report_visuals/
+```
+
+当前报告引用了 19 张图，覆盖方法路线、F1/MCC/PPR 权衡、Precision/Recall 平衡、阈值病理、概率分布、训练 loss、checkpoint guard、Gated 内部门控、Slice-MIL 融合权重、RawCode-MIL chunk 证据，以及 TP/FP/FN/TN 局部证据分析。
 
 ---
 
-## 其他实验命令
+## 其他 baseline
 
 ### Devign / GGNN+Conv 风格基线
 
@@ -328,26 +414,17 @@ python -m cpg_vuln --config configs/default.yaml train-enhanced `
   --force
 ```
 
-### 汇总与解释
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m cpg_vuln --config configs/default.yaml summarize
-python -m cpg_vuln --config configs/default.yaml evaluate-ramp --run ramp-E4-v2A-raw-v1-fixed05-mcc-lr3e4-probe --split strict --export-attention
-python -m cpg_vuln --config configs/default.yaml visualize-attention --run ramp-E4-v2A-raw-v1-fixed05-mcc-lr3e4-probe
-```
-
 ---
 
 ## 评价原则
 
 本项目当前统一使用以下评价约束：
 
-- 最终报告优先看 `test_fixed_0_5`，即固定 `0.5` 阈值
-- 每次报告 F1 时必须同时报告 precision、recall、MCC、PPR 和 PR-AUC
-- 不能只追求 F1，必须监控 recall 和 PPR 是否接近全正预测
-- 当前 RAMP checkpoint guard 推荐值为 `0.25 <= PPR <= 0.75` 且 `recall <= 0.90`
-- `strict` split 优先于 `course` split，因为它更能避免重复代码跨集合泄漏
+1. 最终报告优先看 `test_fixed_0_5`。
+2. 每次报告 F1 时必须同时报告 Precision、Recall、MCC、PPR、ROC-AUC 和 PR-AUC。
+3. 不能只追求 Recall 或 F1，必须检查 PPR 是否接近全正预测。
+4. 当前 RAMP checkpoint guard 推荐值为 `0.25 <= PPR <= 0.75` 且 `Recall <= 0.90`。
+5. `strict` split 优先于 `course` split，因为它更能避免重复代码跨集合泄漏。
 
 常用指标解释：
 
@@ -355,54 +432,31 @@ python -m cpg_vuln --config configs/default.yaml visualize-attention --run ramp-
 | --- | --- |
 | Precision | 判为漏洞的样本中，有多少是真的漏洞 |
 | Recall | 真漏洞中，有多少被模型找出来 |
-| F1 | Precision 和 recall 的调和平均 |
-| MCC | 更严格的二分类综合指标，对全正/全负更敏感 |
+| F1 | Precision 和 Recall 的调和平均 |
+| MCC | 更严格的二分类综合指标，对全正或全负预测更敏感 |
 | PPR | 模型预测为漏洞的比例，用于识别过度正类预测 |
-| PR-AUC | 排序质量指标，适合类别比例不完全均衡时观察 |
-
----
-
-## 归一化模式
-
-| Config | normalization key | 作用 |
-| --- | --- | --- |
-| `configs/default.yaml` | `raw-v1` | 保留原始节点文本和函数源码文本，是当前冲指标主配置 |
-| `configs/semantic_anon.yaml` | `semantic-anon-v1` | 对用户定义命名做语义匿名，保留部分 API/类型语义 |
-| `configs/full_anon.yaml` | `full-anon-v1` | 更强匿名化，用于验证模型是否依赖变量名、函数名等命名线索 |
-
-缓存和输出按 normalization key 隔离：
-
-```text
-artifacts/normalization/<key>/topologies/
-artifacts/normalization/<key>/features/
-artifacts/normalization/<key>/retrieval/
-outputs/runs/<key>/
-outputs/reports/<key>/
-```
-
-raw 的函数级 CodeBERT cache 兼容旧路径：
-
-```text
-artifacts/features/codebert/functions-raw/
-```
+| ROC-AUC | 全阈值排序质量指标 |
+| PR-AUC | 更关注正类检索质量的排序指标 |
 
 ---
 
 ## 目录结构
 
 ```text
-configs/                  实验配置和 source map override
-scripts/                  环境脚本、审计脚本和 ensemble probe
-src/cpg_vuln/data/        审计、GraphML 解析、视图构建、split、dataset
-src/cpg_vuln/features/    文本归一化、Word2Vec 和 CodeBERT 离线缓存
-src/cpg_vuln/mining/      hard-negative bank、motif 和检索特征
-src/cpg_vuln/models/      GCN、Devign、SelectiveFusion、RAMP v2
-src/cpg_vuln/training/    训练循环、loss、threshold、RAMP 训练逻辑
-src/cpg_vuln/evaluation/  checkpoint 复评估
+configs/                     实验配置和 source map override
+scripts/                     环境脚本、审计脚本、可视化脚本
+src/cpg_vuln/data/           审计、GraphML 解析、视图构建、split、dataset
+src/cpg_vuln/end2end/        RawCode-MIL 端到端源码学习
+src/cpg_vuln/features/       文本归一化、Word2Vec 和 CodeBERT 离线缓存
+src/cpg_vuln/mining/         hard-negative bank、motif 和检索特征
+src/cpg_vuln/models/         GCN、Devign、SelectiveFusion、RAMP v2/v3
+src/cpg_vuln/training/       训练循环、loss、threshold、RAMP 训练逻辑
+src/cpg_vuln/evaluation/     checkpoint 复评估
 src/cpg_vuln/visualization/  汇总、attention 可视化和解释导出
-tests/                    单元测试和 smoke tests
-artifacts/                可重建中间产物
-outputs/                  run、checkpoint、predictions、metrics、reports
+tests/                       单元测试和 smoke tests
+artifacts/                   可重建中间产物
+outputs/                     run、checkpoint、predictions、metrics、reports
+figures/report_visuals/      论文报告可视化
 ```
 
 ---
@@ -411,19 +465,15 @@ outputs/                  run、checkpoint、predictions、metrics、reports
 
 ### E4 提示缺少 E3 bank
 
-先运行一次同 normalization key 下的 `E3`：
+先运行一次同 normalization key 下的 `E3`。E3 bank 默认位于：
 
-```powershell
-python -m cpg_vuln --config configs/default.yaml train-ramp --experiment E3 --split strict --view core-cpg --model ramp-v2-rgcn --force
+```text
+artifacts/normalization/<key>/retrieval/<split>/E3/bank.jsonl
 ```
 
 ### cache metadata mismatch
 
-同一路径下已有旧 cache，但当前配置的模型、维度、归一化 fingerprint 或源码归一化状态不匹配。推荐不要混用旧目录，处理方式是：
-
-- 使用新的 normalization key 或 run name
-- 对对应构建命令加 `--force`
-- 必要时手动删除对应 cache 目录后重建
+同一路径下已有旧 cache，但当前配置的模型、维度、归一化 fingerprint 或源码归一化状态不匹配。处理方式是使用新的 normalization key，或对构建命令加 `--force`，必要时删除对应 cache 目录后重建。
 
 ### CodeBERT 下载中断
 
@@ -446,13 +496,11 @@ python -m cpg_vuln --config configs/default.yaml build-codebert-cache
 
 ### 训练结果没有变化
 
-训练命令默认发现已有 `metrics.json` 会跳过。重新训练时使用：
+训练命令默认发现已有 `metrics.json` 会跳过。重新训练时使用 `--force`，或者删除对应的：
 
-```powershell
-python -m cpg_vuln --config configs/default.yaml train-ramp --experiment E4 --split strict --force
+```text
+outputs/runs/<normalization-key>/<run-name>/
 ```
-
-或者删除对应 `outputs/runs/<normalization-key>/<run-name>/`。
 
 ---
 
